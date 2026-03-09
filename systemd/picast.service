@@ -1,0 +1,23 @@
+[Unit]
+Description=Cutegory PiCast Signage Client
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=picast
+Group=picast
+WorkingDirectory=/opt/picast
+ExecStart=/opt/picast/picast-client.sh
+Restart=always
+RestartSec=10
+EnvironmentFile=/opt/picast/config.env
+
+# Hardening
+NoNewPrivileges=true
+ProtectSystem=strict
+ReadWritePaths=/opt/picast/media /opt/picast/logs
+ProtectHome=true
+
+[Install]
+WantedBy=multi-user.target
