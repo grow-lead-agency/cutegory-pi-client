@@ -20,7 +20,7 @@ CHROMIUM_PID_FILE="$SCRIPT_DIR/.chromium.pid"
 XORG_PID_FILE="$SCRIPT_DIR/.xorg.pid"
 MPV_LOG="${LOG_DIR:-/opt/picast/logs}/mpv.log"
 ORCHESTRATOR_PID_FILE="$SCRIPT_DIR/.orchestrator.pid"
-CHROMIUM_DATA_DIR="$CHROMIUM_DATA_DIR-$(id -u)"
+CHROMIUM_DATA_DIR="/tmp/picast-chromium-$(id -u)"
 
 ACTION="${1:-}"
 SYNC_DATA="${2:-}"
@@ -302,7 +302,7 @@ start_chromium_kiosk() {
     --disable-sync --disable-default-apps --disable-component-update \
     --renderer-process-limit=1 \
     --disk-cache-dir=/dev/null \
-    --user-data-dir=$CHROMIUM_DATA_DIR \
+    --user-data-dir="$CHROMIUM_DATA_DIR" \
     "$url" &>/dev/null &
   echo "$!" > "$CHROMIUM_PID_FILE"
   echo "[player] Chromium started (PID: $(cat "$CHROMIUM_PID_FILE"))"
