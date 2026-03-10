@@ -295,8 +295,10 @@ start_chromium_kiosk() {
   screen_h="${screen_h:-1080}"
 
   # dbus-run-session is CRITICAL — without it Chromium exits after ~10s
+  # --app= opens URL without browser chrome, fullscreen via --start-fullscreen
   DISPLAY=:0 dbus-run-session "$chromium_bin" \
-    --kiosk --start-fullscreen --start-maximized \
+    --app="$url" \
+    --start-fullscreen --start-maximized \
     --window-size="${screen_w},${screen_h}" --window-position=0,0 \
     --no-first-run --disable-infobars \
     --disable-session-crashed-bubble \
@@ -309,7 +311,7 @@ start_chromium_kiosk() {
     --disable-sync --disable-default-apps --disable-component-update \
     --in-process-gpu --disable-gpu-compositing \
     --user-data-dir="$CHROMIUM_DATA_DIR" \
-    "$url" &>/dev/null &
+    &>/dev/null &
   echo "$!" > "$CHROMIUM_PID_FILE"
   echo "[player] Chromium started (PID: $(cat "$CHROMIUM_PID_FILE"))"
   sleep 3
