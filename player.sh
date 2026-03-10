@@ -76,6 +76,8 @@ stop_chromium() {
     rm -f "$CHROMIUM_PID_FILE"
   fi
   pkill -f "chromium.*--kiosk.*picast" 2>/dev/null || true
+  # Clean profile lock to prevent SingletonLock permission errors on restart
+  rm -rf /tmp/picast-chromium/SingletonLock /tmp/picast-chromium/SingletonSocket 2>/dev/null || true
 }
 
 stop_mpv() {
@@ -132,6 +134,11 @@ ensure_xorg() {
   echo "[player] Starting Xorg..."
   # Clean stale lock files
   rm -f /tmp/.X0-lock /tmp/.X11-unix/X0 2>/dev/null || true
+  # Ensure Xorg allows non-seat users (needed for systemd service)
+  if [ -f /etc/X11/Xwrapper.config ]; then
+    grep -q "allowed_users=anybody" /etc/X11/Xwrapper.config 2>/dev/null || \
+      echo "allowed_users=anybody" >> /etc/X11/Xwrapper.config
+  fi
   Xorg :0 vt7 -keeptty -noreset -allowMouseOpenFail 2>/tmp/picast-xorg.log &
   local xpid=$!
   echo "$xpid" > "$XORG_PID_FILE"
@@ -149,6 +156,11 @@ ensure_xorg() {
 
   if [ "$ready" = "true" ]; then
     export DISPLAY=:0
+    # Start dbus session for Chromium
+    if command -v dbus-launch &>/dev/null; then
+      eval "$(dbus-launch --sh-syntax)"
+      export DBUS_SESSION_BUS_ADDRESS
+    fi
     # Hide cursor
     if command -v unclutter &>/dev/null; then
       DISPLAY=:0 unclutter -idle 0 -root &>/dev/null &
@@ -264,8 +276,21 @@ start_chromium_kiosk() {
     return
   fi
 
+  # Clear Chromium crashed state (prevents "restore pages" dialog)
+  local chromium_prefs="/tmp/picast-chromium/Default/Preferences"
+  if [ -f "$chromium_prefs" ]; then
+    sed -i 's/"exited_cleanly":false/"exited_cleanly":true/' "$chromium_prefs" 2>/dev/null
+    sed -i 's/"exit_type":"Crashed"/"exit_type":"Normal"/' "$chromium_prefs" 2>/dev/null
+  fi
+
+  # Disable screensaver/DPMS
+  DISPLAY=:0 xset s noblank 2>/dev/null || true
+  DISPLAY=:0 xset s off 2>/dev/null || true
+  DISPLAY=:0 xset -dpms 2>/dev/null || true
+
   DISPLAY=:0 "$chromium_bin" \
-    --kiosk --no-first-run --disable-infobars \
+    --kiosk --incognito \
+    --no-first-run --disable-infobars \
     --disable-session-crashed-bubble \
     --disable-features=TranslateUI,Translate \
     --disable-translate \
@@ -275,11 +300,12 @@ start_chromium_kiosk() {
     --disable-extensions --disable-background-networking \
     --disable-sync --disable-default-apps --disable-component-update \
     --renderer-process-limit=1 \
+    --disk-cache-dir=/dev/null \
     --user-data-dir=/tmp/picast-chromium \
-    --app="$url" &>/dev/null &
+    "$url" &>/dev/null &
   echo "$!" > "$CHROMIUM_PID_FILE"
   echo "[player] Chromium started (PID: $(cat "$CHROMIUM_PID_FILE"))"
-  sleep 2
+  sleep 3
 
   # Wait for duration
   sleep "$duration"

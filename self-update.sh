@@ -95,7 +95,7 @@ NEW_DEPS_HASH=$(md5sum "$UPDATE_DIR/install.sh" 2>/dev/null | cut -d' ' -f1 || e
 OLD_DEPS_HASH=$(cat "$DEPS_FILE" 2>/dev/null || echo "")
 if [ -n "$NEW_DEPS_HASH" ] && [ "$NEW_DEPS_HASH" != "$OLD_DEPS_HASH" ]; then
   log "Checking for new dependencies..."
-  for pkg in chromium xserver-xorg-core xinit unclutter fbgrab; do
+  for pkg in chromium xserver-xorg-core xserver-xorg-legacy xinit unclutter dbus-x11 x11-xserver-utils fbgrab; do
     if ! dpkg -l "$pkg" &>/dev/null 2>&1; then
       log "Installing missing dependency: $pkg"
       apt-get install -y -qq "$pkg" 2>/dev/null || log "WARN: Failed to install $pkg"
