@@ -84,13 +84,15 @@ send_heartbeat() {
   uptime=$(get_uptime_sec)
 
   # Read display info from cache
-  local display_res="unknown" display_model="unknown" display_4k="false" display_hdr="false"
+  local display_res="unknown" display_model="unknown" display_4k="false" display_hdr="false" display_orientation="landscape" display_aspect="16:9"
   local display_cache="$SCRIPT_DIR/.display-info.json"
   if [ -f "$display_cache" ]; then
     display_res=$(jq -r '.current_resolution // "unknown"' "$display_cache")
     display_model=$(jq -r '(.manufacturer // "") + " " + (.model // "") | gsub("^ | $"; "")' "$display_cache")
     display_4k=$(jq -r '.is_4k_active // false' "$display_cache")
     display_hdr=$(jq -r '.hdr_capable // false' "$display_cache")
+    display_orientation=$(jq -r '.orientation // "landscape"' "$display_cache")
+    display_aspect=$(jq -r '.aspect_ratio // "16:9"' "$display_cache")
   fi
 
   # CPU temperature (Pi thermal zone)
@@ -102,7 +104,7 @@ send_heartbeat() {
   curl -sf -X POST "${SERVER_URL}/api/v1/signage/heartbeat" \
     -H "X-Device-Token: ${DEVICE_KEY}" \
     -H "Content-Type: application/json" \
-    -d "{\"device_id\":\"${DEVICE_ID}\",\"ip_address\":\"${ip}\",\"free_disk_mb\":${disk},\"uptime_sec\":${uptime},\"player_status\":\"${status}\",\"display_resolution\":\"${display_res}\",\"display_model\":\"${display_model}\",\"display_4k\":${display_4k},\"display_hdr\":${display_hdr},\"cpu_temp\":${cpu_temp}}" \
+    -d "{\"device_id\":\"${DEVICE_ID}\",\"ip_address\":\"${ip}\",\"free_disk_mb\":${disk},\"uptime_sec\":${uptime},\"player_status\":\"${status}\",\"display_resolution\":\"${display_res}\",\"display_model\":\"${display_model}\",\"display_4k\":${display_4k},\"display_hdr\":${display_hdr},\"display_orientation\":\"${display_orientation}\",\"display_aspect_ratio\":\"${display_aspect}\",\"cpu_temp\":${cpu_temp}}" \
     > /dev/null 2>&1 || echo "[picast] $(date +%H:%M:%S) Heartbeat failed (non-fatal)"
 }
 

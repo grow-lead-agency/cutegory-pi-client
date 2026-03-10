@@ -5,7 +5,7 @@
 # Manages mpv process, generates playlist, handles image duration + transitions
 # =============================================================================
 
-set -euo pipefail
+set -uo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 CONFIG_FILE="${PICAST_CONFIG:-$SCRIPT_DIR/config.env}"
@@ -33,8 +33,11 @@ detect_display() {
   DISPLAY_HDR=$(echo "$display_json" | jq -r '.hdr_capable // false')
   DISPLAY_4K=$(echo "$display_json" | jq -r '.is_4k_capable // false')
   DISPLAY_MODEL=$(echo "$display_json" | jq -r '.model // "unknown"')
+  DISPLAY_ORIENTATION=$(echo "$display_json" | jq -r '.orientation // "landscape"')
+  DISPLAY_ASPECT=$(echo "$display_json" | jq -r '.aspect_ratio // "16:9"')
 
   echo "[player] Display: ${DISPLAY_WIDTH}x${DISPLAY_HEIGHT}@${DISPLAY_REFRESH}Hz (${DISPLAY_MODEL})"
+  echo "[player] Orientation: ${DISPLAY_ORIENTATION} (${DISPLAY_ASPECT})"
   [ "$DISPLAY_4K" = "true" ] && echo "[player] 4K capable display detected"
   [ "$DISPLAY_HDR" = "true" ] && echo "[player] HDR capable display detected"
 }
@@ -165,6 +168,13 @@ build_mpv_args() {
   # native playlist advancement which is instant but clean (black frame gap ~0ms).
   # True crossfade would require pre-rendering a video from images via ffmpeg.
   echo "[player] Transitions: native (instant cut)"
+
+  # ---------- Portrait mode (rotated TV) ----------
+  if [ "$DISPLAY_ORIENTATION" = "portrait" ]; then
+    # Rotate content 90° clockwise for portrait-mounted displays
+    MPV_ARGS+=(--video-rotate=90)
+    echo "[player] Portrait mode: rotating content 90°"
+  fi
 
   # ---------- Scaling for best quality ----------
   MPV_ARGS+=(

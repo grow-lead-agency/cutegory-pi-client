@@ -228,6 +228,27 @@ case "$ACTION" in
     # 4K capable?
     can_4k=$(is_4k_capable 2>/dev/null)
 
+    # Orientation detection
+    local orientation="landscape"
+    local aspect_ratio="16:9"
+    if [ "$width" -gt 0 ] 2>/dev/null && [ "$height" -gt 0 ] 2>/dev/null; then
+      if [ "$height" -gt "$width" ]; then
+        orientation="portrait"
+      fi
+      # Calculate aspect ratio (common ones)
+      local ratio_val
+      ratio_val=$(awk "BEGIN {printf \"%.2f\", $width/$height}")
+      case "$ratio_val" in
+        1.77|1.78) aspect_ratio="16:9" ;;
+        1.33)      aspect_ratio="4:3" ;;
+        1.60)      aspect_ratio="16:10" ;;
+        2.37|2.38|2.39) aspect_ratio="21:9" ;;
+        0.56)      aspect_ratio="9:16" ;;
+        0.75)      aspect_ratio="3:4" ;;
+        *)         aspect_ratio="${ratio_val}:1" ;;
+      esac
+    fi
+
     # Build JSON
     cat > "$DISPLAY_CACHE" << ENDJSON
 {
@@ -235,6 +256,8 @@ case "$ACTION" in
   "width": $width,
   "height": $height,
   "refresh_rate": $refresh,
+  "orientation": "$orientation",
+  "aspect_ratio": "$aspect_ratio",
   "detection_method": "$method",
   "manufacturer": "$manufacturer",
   "model": "$model",
