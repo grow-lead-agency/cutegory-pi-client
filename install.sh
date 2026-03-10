@@ -100,6 +100,12 @@ systemctl enable picast-update.timer 2>/dev/null || true
 systemctl start picast-update.timer 2>/dev/null || true
 echo "  Auto-update: daily at 04:00 + on boot"
 
+# Weekly reboot for reliability (Sunday 03:30)
+echo "  Adding weekly reboot (Sunday 03:30)..."
+CRON_LINE="30 3 * * 0 /sbin/reboot"
+(crontab -l 2>/dev/null | grep -v '/sbin/reboot'; echo "$CRON_LINE") | crontab -
+echo "  Weekly reboot: Sunday 03:30"
+
 # [6/8] Security hardening
 echo "[6/8] Security hardening..."
 
