@@ -74,7 +74,6 @@ for entry in $ITEMS; do
   echo "[sync] Downloading: $filename"
   if curl -sf -o "$local_path.tmp" "$url"; then
     # Validate downloaded file (not empty, not HTML error page)
-    local tmp_size
     tmp_size=$(stat -c%s "$local_path.tmp" 2>/dev/null || echo 0)
     if [ "$tmp_size" -lt 1024 ]; then
       echo "[sync] ERROR: Downloaded file too small ($tmp_size bytes), skipping $filename"
