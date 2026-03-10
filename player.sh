@@ -57,8 +57,22 @@ stop_chromium() {
     fi
     rm -f "$CHROMIUM_PID_FILE"
   fi
-  # Clean up any stray chromium processes from kiosk mode
+  # Clean up any stray chromium processes
   pkill -f "chromium.*--kiosk.*picast" 2>/dev/null || true
+  # Stop Xorg server (frees DRM for mpv)
+  if [ -f "$SCRIPT_DIR/.xorg.pid" ]; then
+    local xpid
+    xpid=$(cat "$SCRIPT_DIR/.xorg.pid")
+    kill "$xpid" 2>/dev/null || true
+    sleep 0.5
+    kill -9 "$xpid" 2>/dev/null || true
+    rm -f "$SCRIPT_DIR/.xorg.pid"
+    echo "[player] Xorg stopped (DRM released)"
+  fi
+  pkill -f "Xorg.*:0" 2>/dev/null || true
+  unset DISPLAY
+  # Wait for DRM to be fully released
+  sleep 1
 }
 
 stop_mpv() {
@@ -230,33 +244,38 @@ start_chromium_kiosk() {
     --app="$url"
   )
 
-  # Ensure XDG_RUNTIME_DIR exists (required by cage/Wayland)
-  export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/tmp/picast-runtime}"
-  mkdir -p "$XDG_RUNTIME_DIR"
-
-  # Check if we have a display server
-  if [ -n "${DISPLAY:-}" ] || [ -n "${WAYLAND_DISPLAY:-}" ]; then
-    # X11 or Wayland available
-    "$chromium_bin" "${chromium_args[@]}" &>/dev/null &
-    echo "$!" > "$CHROMIUM_PID_FILE"
-  elif command -v cage &>/dev/null; then
-    # Use cage (minimal Wayland compositor for kiosk on DRM)
-    # WLR_BACKENDS=drm forces DRM output (headless Pi, no X11)
-    WLR_BACKENDS=drm cage -- "$chromium_bin" "${chromium_args[@]}" &>/dev/null &
-    echo "$!" > "$CHROMIUM_PID_FILE"
-    # Give cage time to acquire DRM and start Chromium
-    sleep 3
-  else
-    # Fallback: start minimal X server just for Chromium
-    if command -v xinit &>/dev/null; then
-      xinit "$chromium_bin" "${chromium_args[@]}" -- :1 vt2 &>/dev/null &
-      echo "$!" > "$CHROMIUM_PID_FILE"
+  # On headless Pi, we need an X server for Chromium
+  # Start Xorg on a spare VT if not already running
+  if [ -z "${DISPLAY:-}" ]; then
+    if command -v Xorg &>/dev/null; then
+      echo "[player] Starting Xorg for web content..."
+      Xorg :0 vt7 -keeptty -noreset &>/dev/null &
+      XORG_PID=$!
+      echo "$XORG_PID" > "$SCRIPT_DIR/.xorg.pid"
+      sleep 3
+      if kill -0 "$XORG_PID" 2>/dev/null; then
+        export DISPLAY=:0
+        echo "[player] Xorg started on :0 (PID: $XORG_PID)"
+      else
+        echo "[player] ERROR: Xorg failed to start"
+        rm -f "$SCRIPT_DIR/.xorg.pid"
+        return 1
+      fi
     else
-      echo "[player] ERROR: No display server (X11/Wayland/cage) available for Chromium"
-      echo "[player] Install cage: sudo apt-get install cage"
+      echo "[player] ERROR: No Xorg found. Install: sudo apt-get install xserver-xorg-core"
       return 1
     fi
   fi
+
+  # Hide cursor
+  if command -v unclutter &>/dev/null; then
+    unclutter -idle 0 -root &>/dev/null &
+  fi
+
+  # Launch Chromium in kiosk mode
+  DISPLAY="${DISPLAY:-:0}" "$chromium_bin" "${chromium_args[@]}" &>/dev/null &
+  echo "$!" > "$CHROMIUM_PID_FILE"
+  sleep 2
 
   # Wait for specified duration
   sleep "$duration"

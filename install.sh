@@ -28,7 +28,7 @@ fi
 echo ""
 echo "[1/7] Installing dependencies..."
 apt-get update -qq
-apt-get install -y -qq mpv jq curl cec-utils git edid-decode fbgrab chromium cage
+apt-get install -y -qq mpv jq curl cec-utils git edid-decode fbgrab chromium xserver-xorg-core xinit unclutter
 
 # [2/7] Create picast user
 echo "[2/7] Creating picast user..."
