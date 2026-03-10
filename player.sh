@@ -126,10 +126,12 @@ ensure_xorg() {
   fi
 
   echo "[player] Starting Xorg..."
-  Xorg :0 vt7 -keeptty -noreset 2>/tmp/picast-xorg.log &
+  # Clean stale lock files
+  rm -f /tmp/.X0-lock /tmp/.X11-unix/X0 2>/dev/null || true
+  Xorg :0 vt7 -keeptty -noreset -allowMouseOpenFail 2>/tmp/picast-xorg.log &
   local xpid=$!
   echo "$xpid" > "$XORG_PID_FILE"
-  sleep 4
+  sleep 6
 
   if kill -0 "$xpid" 2>/dev/null; then
     export DISPLAY=:0
