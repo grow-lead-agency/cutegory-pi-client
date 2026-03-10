@@ -41,6 +41,13 @@ if [ -f "$HASH_FILE" ]; then
   LAST_CONFIG_HASH=$(cat "$HASH_FILE")
 fi
 
+# Detect connected display on startup
+echo "[picast] Detecting display..."
+"$SCRIPT_DIR/display-detect.sh" detect > /dev/null 2>&1 || echo "[picast] Display detection failed (non-fatal)"
+if [ -f "$SCRIPT_DIR/.display-info.json" ]; then
+  echo "[picast] Display: $(jq -r '.current_resolution' "$SCRIPT_DIR/.display-info.json") ($(jq -r '.model' "$SCRIPT_DIR/.display-info.json"))"
+fi
+
 # ---------- helpers ----------
 
 get_local_ip() {
@@ -76,10 +83,26 @@ send_heartbeat() {
   local uptime
   uptime=$(get_uptime_sec)
 
+  # Read display info from cache
+  local display_res="unknown" display_model="unknown" display_4k="false" display_hdr="false"
+  local display_cache="$SCRIPT_DIR/.display-info.json"
+  if [ -f "$display_cache" ]; then
+    display_res=$(jq -r '.current_resolution // "unknown"' "$display_cache")
+    display_model=$(jq -r '(.manufacturer // "") + " " + (.model // "") | gsub("^ | $"; "")' "$display_cache")
+    display_4k=$(jq -r '.is_4k_active // false' "$display_cache")
+    display_hdr=$(jq -r '.hdr_capable // false' "$display_cache")
+  fi
+
+  # CPU temperature (Pi thermal zone)
+  local cpu_temp="0"
+  if [ -f /sys/class/thermal/thermal_zone0/temp ]; then
+    cpu_temp=$(awk '{printf "%.1f", $1/1000}' /sys/class/thermal/thermal_zone0/temp 2>/dev/null || echo "0")
+  fi
+
   curl -sf -X POST "${SERVER_URL}/api/v1/signage/heartbeat" \
     -H "X-Device-Token: ${DEVICE_KEY}" \
     -H "Content-Type: application/json" \
-    -d "{\"device_id\":\"${DEVICE_ID}\",\"ip_address\":\"${ip}\",\"free_disk_mb\":${disk},\"uptime_sec\":${uptime},\"player_status\":\"${status}\"}" \
+    -d "{\"device_id\":\"${DEVICE_ID}\",\"ip_address\":\"${ip}\",\"free_disk_mb\":${disk},\"uptime_sec\":${uptime},\"player_status\":\"${status}\",\"display_resolution\":\"${display_res}\",\"display_model\":\"${display_model}\",\"display_4k\":${display_4k},\"display_hdr\":${display_hdr},\"cpu_temp\":${cpu_temp}}" \
     > /dev/null 2>&1 || echo "[picast] $(date +%H:%M:%S) Heartbeat failed (non-fatal)"
 }
 

@@ -81,6 +81,14 @@ case "${1:-help}" in
     echo "Total: $(du -sh "$INSTALL_DIR/media/" 2>/dev/null | cut -f1 || echo '0')"
     ;;
 
+  display)
+    echo "=== Display Info ==="
+    "$INSTALL_DIR/display-detect.sh" detect 2>/dev/null | jq .
+    echo ""
+    echo "=== Supported Modes ==="
+    "$INSTALL_DIR/display-detect.sh" modes 2>/dev/null || echo "No modes detected"
+    ;;
+
   tv-on)
     "$INSTALL_DIR/cec-control.sh" on
     ;;
@@ -114,6 +122,7 @@ Commands:
   update        Run self-update from GitHub
   sync          Show current sync response from server
   media         List local media files
+  display       Show connected display info (resolution, model, HDR, 4K)
   tv-on         Turn TV on via HDMI CEC
   tv-off        Turn TV off via HDMI CEC
   tv-status     Check TV power status

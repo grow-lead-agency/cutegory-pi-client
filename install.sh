@@ -28,7 +28,7 @@ fi
 echo ""
 echo "[1/7] Installing dependencies..."
 apt-get update -qq
-apt-get install -y -qq mpv jq curl cec-utils git
+apt-get install -y -qq mpv jq curl cec-utils git edid-decode
 
 # [2/7] Create picast user
 echo "[2/7] Creating picast user..."
@@ -52,6 +52,7 @@ cp "$SCRIPT_DIR/sync.sh" "$INSTALL_DIR/"
 cp "$SCRIPT_DIR/player.sh" "$INSTALL_DIR/"
 cp "$SCRIPT_DIR/cec-control.sh" "$INSTALL_DIR/"
 cp "$SCRIPT_DIR/picast-ctl.sh" "$INSTALL_DIR/"
+cp "$SCRIPT_DIR/display-detect.sh" "$INSTALL_DIR/"
 
 chmod +x "$INSTALL_DIR"/*.sh
 

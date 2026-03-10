@@ -37,7 +37,7 @@ fi
 
 # Copy updated scripts (never touch config.env)
 cd "$REPO_DIR"
-for script in picast-client.sh sync.sh player.sh cec-control.sh self-update.sh; do
+for script in picast-client.sh sync.sh player.sh cec-control.sh display-detect.sh picast-ctl.sh self-update.sh; do
   if [ -f "$script" ]; then
     cp "$script" "$INSTALL_DIR/$script"
     chmod +x "$INSTALL_DIR/$script"
