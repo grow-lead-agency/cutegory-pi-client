@@ -1,13 +1,18 @@
 #!/bin/bash
 # =============================================================================
 # Cutegory PiCast — One-click installer for Raspberry Pi
+# Tested on: Raspberry Pi 4 + Pi OS Lite 64-bit (Debian Trixie/Bookworm)
 # Usage: scp this repo to Pi, then run: sudo ./install.sh
 # =============================================================================
 
 set -e
 
+PICAST_VERSION="1.1.0"
+INSTALL_DIR="/opt/picast"
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+
 echo "========================================="
-echo "  Cutegory PiCast Installer"
+echo "  Cutegory PiCast Installer v${PICAST_VERSION}"
 echo "========================================="
 
 # Must run as root
@@ -16,50 +21,86 @@ if [ "$(id -u)" -ne 0 ]; then
   exit 1
 fi
 
-SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-INSTALL_DIR="/opt/picast"
-
 # Check if running on Raspberry Pi
 if ! grep -q "Raspberry\|BCM" /proc/cpuinfo 2>/dev/null; then
   echo "[WARN] This doesn't appear to be a Raspberry Pi. Continuing anyway..."
 fi
 
-# [1/7] Install dependencies
+# =========================================================================
+# [1/9] Install dependencies
+# =========================================================================
 echo ""
-echo "[1/7] Installing dependencies..."
+echo "[1/9] Installing dependencies..."
 apt-get update -qq
-apt-get install -y -qq mpv jq curl cec-utils git edid-decode fbgrab chromium xserver-xorg-core xserver-xorg-legacy xinit unclutter dbus-x11 x11-xserver-utils
 
-# [2/7] Create picast user
-echo "[2/7] Creating picast user..."
+# Core
+apt-get install -y -qq \
+  mpv jq curl \
+  cec-utils \
+  ddcutil \
+  git \
+  edid-decode fbgrab \
+  ffmpeg
+
+# Chromium + Xorg (for hybrid web content playback)
+apt-get install -y -qq \
+  chromium \
+  xserver-xorg-core xserver-xorg-legacy xinit \
+  unclutter dbus-x11 x11-xserver-utils
+
+echo "  Core: mpv, jq, curl, cec-utils, ddcutil, ffmpeg, chromium"
+
+# =========================================================================
+# [2/9] Create picast user + groups
+# =========================================================================
+echo "[2/9] Creating picast user..."
 if ! id picast &>/dev/null; then
   useradd -r -s /usr/sbin/nologin -d "$INSTALL_DIR" picast
-  # Add to video group for DRM/GPU access
-  usermod -aG video picast
-  echo "  Created user: picast"
+  echo "  Created system user: picast"
 else
   echo "  User picast already exists"
 fi
 
-# [3/7] Create directories
-echo "[3/7] Creating directories..."
-mkdir -p "$INSTALL_DIR"/{media,logs}
+# Add to required groups for hardware access
+usermod -aG video picast   # DRM/GPU access
+usermod -aG render picast  # GPU render nodes (/dev/dri/renderD128)
+usermod -aG input picast   # Input devices
+usermod -aG i2c picast 2>/dev/null || true  # DDC/CI (i2c bus)
+echo "  Groups: video, render, input, i2c"
 
-# [4/8] Copy client files
-echo "[4/8] Copying client files..."
-cp "$SCRIPT_DIR/picast-client.sh" "$INSTALL_DIR/"
-cp "$SCRIPT_DIR/sync.sh" "$INSTALL_DIR/"
-cp "$SCRIPT_DIR/player.sh" "$INSTALL_DIR/"
-cp "$SCRIPT_DIR/cec-control.sh" "$INSTALL_DIR/"
-cp "$SCRIPT_DIR/picast-ctl.sh" "$INSTALL_DIR/"
-cp "$SCRIPT_DIR/display-detect.sh" "$INSTALL_DIR/"
+# Enable i2c-dev kernel module (required for ddcutil / DDC/CI)
+if ! grep -q "^i2c-dev" /etc/modules 2>/dev/null; then
+  echo "i2c-dev" >> /etc/modules
+  modprobe i2c-dev 2>/dev/null || true
+  echo "  Enabled i2c-dev kernel module"
+fi
 
-chmod +x "$INSTALL_DIR"/*.sh
+# =========================================================================
+# [3/9] Create directories
+# =========================================================================
+echo "[3/9] Creating directories..."
+mkdir -p "$INSTALL_DIR"/{media,logs,assets}
+
+# mpv shader cache dir (prevents permission errors)
+mkdir -p "$INSTALL_DIR/.cache"
+
+# =========================================================================
+# [4/9] Copy client files
+# =========================================================================
+echo "[4/9] Copying client files..."
+for script in picast-client.sh sync.sh player.sh cec-control.sh picast-ctl.sh display-detect.sh self-update.sh; do
+  if [ -f "$SCRIPT_DIR/$script" ]; then
+    cp "$SCRIPT_DIR/$script" "$INSTALL_DIR/$script"
+    chmod +x "$INSTALL_DIR/$script"
+  fi
+done
+echo "  Scripts: $(ls "$INSTALL_DIR"/*.sh 2>/dev/null | wc -l) files"
 
 # Symlink picast-ctl to PATH for easy access
 ln -sf "$INSTALL_DIR/picast-ctl.sh" /usr/local/bin/picast-ctl
+echo "  Symlink: /usr/local/bin/picast-ctl → picast-ctl.sh"
 
-# Copy config — prefer real config.env over template, never overwrite existing
+# Copy config — prefer real config.env over template, NEVER overwrite existing
 if [ ! -f "$INSTALL_DIR/config.env" ]; then
   if [ -f "$SCRIPT_DIR/config.env" ]; then
     cp "$SCRIPT_DIR/config.env" "$INSTALL_DIR/config.env"
@@ -72,44 +113,40 @@ else
   echo "  config.env already exists, skipping"
 fi
 
-# Copy assets (standby screen, test pages)
+# Copy assets (standby screen, updating splash, test pages)
 if [ -d "$SCRIPT_DIR/assets" ]; then
-  mkdir -p "$INSTALL_DIR/assets"
   cp -r "$SCRIPT_DIR/assets/"* "$INSTALL_DIR/assets/" 2>/dev/null || true
-  echo "  Copied assets (standby screen, test pages)"
+  echo "  Assets: standby.jpg, updating.jpg, test-web.html"
 fi
 
-# Set ownership
+# Set ownership (all picast files owned by picast user)
 chown -R picast:picast "$INSTALL_DIR"
 
-# Copy self-update script
-if [ -f "$SCRIPT_DIR/self-update.sh" ]; then
-  cp "$SCRIPT_DIR/self-update.sh" "$INSTALL_DIR/"
-  chmod +x "$INSTALL_DIR/self-update.sh"
-fi
-
-# [5/8] Install systemd services
-echo "[5/8] Installing systemd services..."
+# =========================================================================
+# [5/9] Install systemd services
+# =========================================================================
+echo "[5/9] Installing systemd services..."
 cp "$SCRIPT_DIR/systemd/picast.service" /etc/systemd/system/
 cp "$SCRIPT_DIR/systemd/picast-update.service" /etc/systemd/system/ 2>/dev/null || true
 cp "$SCRIPT_DIR/systemd/picast-update.timer" /etc/systemd/system/ 2>/dev/null || true
 systemctl daemon-reload
 
-# Enable auto-update timer
+# Enable auto-update timer (daily at 04:00 + 60s after boot)
 systemctl enable picast-update.timer 2>/dev/null || true
 systemctl start picast-update.timer 2>/dev/null || true
 echo "  Auto-update: daily at 04:00 + on boot"
 
 # Weekly reboot for reliability (Sunday 03:30)
-echo "  Adding weekly reboot (Sunday 03:30)..."
 CRON_LINE="30 3 * * 0 /sbin/reboot"
 (crontab -l 2>/dev/null | grep -v '/sbin/reboot'; echo "$CRON_LINE") | crontab -
 echo "  Weekly reboot: Sunday 03:30"
 
-# [6/8] Security hardening
-echo "[6/8] Security hardening..."
+# =========================================================================
+# [6/9] Security hardening
+# =========================================================================
+echo "[6/9] Security hardening..."
 
-# Install and configure UFW firewall
+# UFW firewall
 if ! command -v ufw &>/dev/null; then
   apt-get install -y -qq ufw
 fi
@@ -119,7 +156,7 @@ ufw allow ssh >/dev/null 2>&1
 ufw --force enable >/dev/null 2>&1
 echo "  Firewall: SSH only inbound"
 
-# Install fail2ban
+# fail2ban
 if ! command -v fail2ban-client &>/dev/null; then
   apt-get install -y -qq fail2ban
   systemctl enable fail2ban
@@ -132,7 +169,7 @@ systemctl disable bluetooth.service 2>/dev/null || true
 systemctl disable avahi-daemon.service 2>/dev/null || true
 echo "  Disabled: bluetooth, avahi"
 
-# Disable SSH password auth (key-only via Tailscale)
+# SSH key-only auth
 if ! grep -q "^PasswordAuthentication no" /etc/ssh/sshd_config 2>/dev/null; then
   sed -i 's/^#*PasswordAuthentication.*/PasswordAuthentication no/' /etc/ssh/sshd_config
   sed -i 's/^#*ChallengeResponseAuthentication.*/ChallengeResponseAuthentication no/' /etc/ssh/sshd_config
@@ -144,27 +181,40 @@ fi
 chmod 600 "$INSTALL_DIR/config.env" 2>/dev/null || true
 echo "  config.env: owner-only read (600)"
 
-# Enable unattended security updates
-if ! dpkg -l unattended-upgrades &>/dev/null; then
+# Unattended security updates
+if ! dpkg -l unattended-upgrades &>/dev/null 2>&1; then
   apt-get install -y -qq unattended-upgrades
-  echo 'Unattended-Upgrade::Origins-Pattern { "origin=Debian,codename=${distro_codename},label=Debian-Security"; };' \
-    > /etc/apt/apt.conf.d/51picast-auto-security
-  echo 'Unattended-Upgrade::Automatic-Reboot "false";' >> /etc/apt/apt.conf.d/51picast-auto-security
+  cat > /etc/apt/apt.conf.d/51picast-auto-security << 'APTCONF'
+Unattended-Upgrade::Origins-Pattern { "origin=Debian,codename=${distro_codename},label=Debian-Security"; };
+Unattended-Upgrade::Automatic-Reboot "false";
+APTCONF
   systemctl enable unattended-upgrades
   echo "  Unattended security updates: enabled"
 fi
 
-# [7/8] Configure boot for signage
-echo "[7/8] Configuring boot..."
+# =========================================================================
+# [7/9] Install Tailscale (remote access VPN)
+# =========================================================================
+echo "[7/9] Setting up Tailscale..."
+if ! command -v tailscale &>/dev/null; then
+  curl -fsSL https://tailscale.com/install.sh | sh
+  echo "  Tailscale installed — run 'sudo tailscale up' to authenticate"
+else
+  echo "  Tailscale already installed"
+  tailscale status 2>/dev/null | head -3 || echo "  (not connected)"
+fi
+
+# =========================================================================
+# [8/9] Configure boot for signage
+# =========================================================================
+echo "[8/9] Configuring boot..."
 
 # Auto-login to console (no desktop)
 raspi-config nonint do_boot_behaviour B2 2>/dev/null || true
 
-# HDMI config for reliable output
+# GPU memory allocation
 BOOT_CONFIG="/boot/firmware/config.txt"
-if [ ! -f "$BOOT_CONFIG" ]; then
-  BOOT_CONFIG="/boot/config.txt"
-fi
+[ ! -f "$BOOT_CONFIG" ] && BOOT_CONFIG="/boot/config.txt"
 
 if ! grep -q "# PiCast settings" "$BOOT_CONFIG" 2>/dev/null; then
   cat >> "$BOOT_CONFIG" << 'HDMI'
@@ -175,11 +225,13 @@ gpu_mem=256
 disable_overscan=1
 hdmi_force_hotplug=1
 disable_splash=1
+# Enable DRM VC4 driver (required for mpv DRM output)
+dtoverlay=vc4-kms-v3d
 HDMI
-  echo "  Added HDMI config to $BOOT_CONFIG"
+  echo "  Added HDMI + GPU config to $BOOT_CONFIG"
 fi
 
-# Hide boot text — show blank screen instead of console messages
+# Hide boot text (blank screen instead of console messages)
 CMDLINE="/boot/firmware/cmdline.txt"
 [ ! -f "$CMDLINE" ] && CMDLINE="/boot/cmdline.txt"
 if ! grep -q "quiet" "$CMDLINE" 2>/dev/null; then
@@ -187,19 +239,36 @@ if ! grep -q "quiet" "$CMDLINE" 2>/dev/null; then
   echo "  Hidden boot text (quiet splash)"
 fi
 
-# [8/8] Enable service (don't start yet — config needed)
-echo "[8/8] Enabling service..."
+# Xwrapper config (allow non-root Xorg for hybrid mode)
+mkdir -p /etc/X11
+echo "allowed_users=anybody" > /etc/X11/Xwrapper.config
+echo "  Xwrapper: allowed_users=anybody"
+
+# =========================================================================
+# [9/9] Enable service
+# =========================================================================
+echo "[9/9] Enabling PiCast service..."
 systemctl enable picast.service
 
 echo ""
 echo "========================================="
-echo "  Installation complete!"
+echo "  PiCast v${PICAST_VERSION} installed!"
 echo ""
 echo "  Next steps:"
-echo "  1. Edit $INSTALL_DIR/config.env"
-echo "     - Set DEVICE_ID (from backoffice device registration)"
-echo "     - Set DEVICE_KEY (shown after device registration)"
-echo "  2. Start: sudo systemctl start picast"
-echo "  3. Monitor: journalctl -u picast -f"
-echo "  4. Reboot: sudo reboot"
+echo "  1. Edit config:"
+echo "       sudo nano $INSTALL_DIR/config.env"
+echo "     Set DEVICE_ID and DEVICE_KEY from backoffice"
+echo ""
+echo "  2. Connect Tailscale:"
+echo "       sudo tailscale up --hostname=picast-XXX"
+echo ""
+echo "  3. Start PiCast:"
+echo "       sudo systemctl start picast"
+echo ""
+echo "  4. Monitor:"
+echo "       journalctl -u picast -f"
+echo "       picast-ctl status"
+echo ""
+echo "  5. Reboot (recommended):"
+echo "       sudo reboot"
 echo "========================================="

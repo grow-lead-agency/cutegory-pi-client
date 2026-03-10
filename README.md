@@ -1,55 +1,78 @@
-# Cutegory PiCast Client
+# Cutegory PiCast
 
-Bash daemon pro Raspberry Pi 4, přehrává signage obsah z [Cutegory Backoffice](https://backoffice.cutegory.cz).
+Open-source digital signage client for Raspberry Pi 4. Polls a backoffice API, downloads media, and plays content fullscreen via mpv/Chromium.
 
-## Požadavky
+## Features
 
-- Raspberry Pi 4 (ARM64) s Raspberry Pi OS Lite
-- HDMI připojená TV
-- WiFi / Ethernet připojení
+- **Media playback** — images + videos via mpv (DRM direct, no X11 needed)
+- **Web content** — URLs via Chromium kiosk (hybrid mode with Xorg)
+- **HEVC/H.264** — hardware-accelerated decoding on Pi 4
+- **4K support** — auto-detects display resolution, HDR, aspect ratio
+- **Offline resilient** — cached config + media, SHA-256 verification
+- **Display power** — CEC (TVs) + DDC/CI (monitors) with working hours
+- **OTA updates** — automatic daily updates from GitHub
+- **Remote management** — command queue (reboot, screenshot, CEC test)
+- **Security** — UFW, fail2ban, SSH key-only, Tailscale VPN
 
-## Instalace
+## Requirements
+
+- Raspberry Pi 4 (ARM64)
+- Pi OS Lite 64-bit (Debian Bookworm/Trixie)
+- HDMI display (TV or monitor)
+- Network connection (WiFi or Ethernet)
+
+## Quick Start
 
 ```bash
-# 1. Naklonuj repo na Pi
+# Clone and install
 git clone https://github.com/grow-lead-agency/cutegory-pi-client.git
 cd cutegory-pi-client
-
-# 2. Spusť instalátor (jako root)
 sudo ./install.sh
 
-# 3. Nastav config
+# Configure
 sudo nano /opt/picast/config.env
-# Vyplň DEVICE_ID a DEVICE_KEY z backoffice
+# Set DEVICE_ID and DEVICE_KEY from backoffice
 
-# 4. Spusť
+# Connect remote access
+sudo tailscale up --hostname=picast-XXX
+
+# Start
 sudo systemctl start picast
-
-# 5. Monitoruj
-journalctl -u picast -f
+sudo reboot
 ```
 
-## Jak to funguje
+## Architecture
 
-1. **picast-client.sh** — hlavní daemon loop, polluje backoffice API každých 30s
-2. **sync.sh** — stahuje nová média z Cloudflare R2, maže stará, ověřuje SHA-256
-3. **player.sh** — spravuje mpv přehrávač (fullscreen, HW dekódování, loop)
-4. **cec-control.sh** — HDMI CEC ovládání TV (zapnutí/vypnutí podle pracovní doby)
+```
+picast-client.sh    Main daemon (30s poll loop)
+├── sync.sh         Media download (R2 CDN, SHA-256, staging dir)
+├── player.sh       Playback orchestrator (mpv DRM / Xorg hybrid)
+├── cec-control.sh  Display power (CEC first, DDC/CI fallback)
+├── display-detect.sh  EDID parsing, resolution detection
+└── self-update.sh  OTA updates from GitHub tarball
+```
 
-## Konfigurace
-
-Viz [config.env.example](config.env.example) pro všechny volby.
-
-## Aktualizace
+## Management
 
 ```bash
-cd /opt/picast-repo  # nebo kam jsi naklonoval
-git pull
-sudo ./install.sh    # přepíše skripty, nechá config.env
-sudo systemctl restart picast
+picast-ctl status       # Full system status
+picast-ctl logs         # Last 50 log lines
+picast-ctl logs-follow  # Real-time logs
+picast-ctl restart      # Restart service
+picast-ctl sync         # Show current sync response
+picast-ctl media        # List local media files
+picast-ctl display      # Display info (resolution, model, 4K, HDR)
+picast-ctl tv-on        # Turn display on (CEC/DDC)
+picast-ctl tv-off       # Turn display off (CEC/DDC)
+picast-ctl update       # Manual update from GitHub
+picast-ctl reboot       # Reboot Pi
 ```
 
-## Odinstalace
+## Configuration
+
+See [config.env.example](config.env.example) for all options.
+
+## Uninstall
 
 ```bash
 sudo ./uninstall.sh

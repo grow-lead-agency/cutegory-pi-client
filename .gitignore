@@ -1,7 +1,17 @@
 config.env
 *.log
+*.log.old
 media/
 .last-sync.json
 .last-hash
 .mpv.pid
+.chromium.pid
+.xorg.pid
+.orchestrator.pid
+.splash.pid
 .current-playlist.txt
+.display-info.json
+.update-hash
+.installed-deps-hash
+.saved-brightness
+.cache/
