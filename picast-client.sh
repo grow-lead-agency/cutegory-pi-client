@@ -204,6 +204,12 @@ while true; do
     echo "$NEW_HASH" > "$HASH_FILE"
 
     echo "[picast] $(date +%H:%M:%S) Update complete"
+  else
+    # Config unchanged — but ensure player is running (e.g. after service restart)
+    if [ "$(get_player_status)" = "idle" ] && [ -f "$SYNC_CACHE" ]; then
+      echo "[picast] $(date +%H:%M:%S) Player not running, restarting from cache"
+      "$SCRIPT_DIR/player.sh" restart "$(cat "$SYNC_CACHE")"
+    fi
   fi
 
   # Send heartbeat every 2nd poll (~60s)
