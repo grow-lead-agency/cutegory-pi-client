@@ -17,7 +17,7 @@ case "${1:-help}" in
     echo "=== Device Info ==="
     echo "Hostname:  $(hostname)"
     echo "IP (LAN):  $(hostname -I 2>/dev/null | awk '{print $1}')"
-    echo "IP (TS):   $(tailscale ip -4 2>/dev/null || echo 'n/a')"
+    echo "IP (VPN):  $(tailscale ip -4 2>/dev/null || echo 'n/a')"
     echo "Uptime:    $(uptime -p)"
     echo "Disk:      $(df -h / | awk 'NR==2{printf "%s used / %s (%s)", $3, $2, $5}')"
     echo "RAM:       $(free -h | awk '/Mem/{printf "%s used / %s", $3, $2}')"
