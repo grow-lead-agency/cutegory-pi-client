@@ -109,6 +109,10 @@ stop_all() {
   stop_chromium
   stop_mpv
   stop_xorg
+  # Belt-and-suspenders: kill any orphan processes holding DRM
+  killall -9 mpv chromium Xorg 2>/dev/null || true
+  sleep 1
+  rm -f /tmp/.X0-lock /tmp/.X11-unix/X0 2>/dev/null || true
 }
 
 # ---------- Xorg management ----------
@@ -131,11 +135,20 @@ ensure_xorg() {
   Xorg :0 vt7 -keeptty -noreset -allowMouseOpenFail 2>/tmp/picast-xorg.log &
   local xpid=$!
   echo "$xpid" > "$XORG_PID_FILE"
-  sleep 6
 
-  if kill -0 "$xpid" 2>/dev/null; then
+  # Poll for Xorg readiness (up to 15s)
+  local ready=false
+  for _i in $(seq 1 15); do
+    if DISPLAY=:0 xdpyinfo &>/dev/null; then
+      ready=true
+      echo "[player] Xorg ready after ${_i}s (PID: $xpid)"
+      break
+    fi
+    sleep 1
+  done
+
+  if [ "$ready" = "true" ]; then
     export DISPLAY=:0
-    echo "[player] Xorg started on :0 (PID: $xpid)"
     # Hide cursor
     if command -v unclutter &>/dev/null; then
       DISPLAY=:0 unclutter -idle 0 -root &>/dev/null &
@@ -143,7 +156,8 @@ ensure_xorg() {
     return 0
   else
     echo "[player] ERROR: Xorg failed to start"
-    cat /tmp/picast-xorg.log 2>/dev/null | grep "EE" | tail -5
+    grep "EE" /tmp/picast-xorg.log 2>/dev/null | tail -5
+    kill -9 "$xpid" 2>/dev/null || true
     rm -f "$XORG_PID_FILE"
     return 1
   fi
@@ -251,15 +265,17 @@ start_chromium_kiosk() {
   fi
 
   DISPLAY=:0 "$chromium_bin" \
-    --kiosk --start-fullscreen --start-maximized \
-    --no-first-run --disable-infobars \
-    --disable-session-crashed-bubble --disable-features=TranslateUI \
+    --kiosk --no-first-run --disable-infobars \
+    --disable-session-crashed-bubble \
+    --disable-features=TranslateUI,Translate \
+    --disable-translate \
     --noerrdialogs --disable-pinch --overscroll-history-navigation=0 \
     --hide-scrollbars --autoplay-policy=no-user-gesture-required \
     --disable-dev-shm-usage --disable-gpu-sandbox --no-sandbox \
+    --disable-extensions --disable-background-networking \
+    --disable-sync --disable-default-apps --disable-component-update \
+    --renderer-process-limit=1 \
     --user-data-dir=/tmp/picast-chromium \
-    --window-size="${DISPLAY_WIDTH},${DISPLAY_HEIGHT}" \
-    --window-position=0,0 \
     --app="$url" &>/dev/null &
   echo "$!" > "$CHROMIUM_PID_FILE"
   echo "[player] Chromium started (PID: $(cat "$CHROMIUM_PID_FILE"))"
