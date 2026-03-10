@@ -157,11 +157,6 @@ ensure_xorg() {
 
   if [ "$ready" = "true" ]; then
     export DISPLAY=:0
-    # Start dbus session for Chromium
-    if command -v dbus-launch &>/dev/null; then
-      eval "$(dbus-launch --sh-syntax)"
-      export DBUS_SESSION_BUS_ADDRESS
-    fi
     # Hide cursor
     if command -v unclutter &>/dev/null; then
       DISPLAY=:0 unclutter -idle 0 -root &>/dev/null &
@@ -289,8 +284,12 @@ start_chromium_kiosk() {
   DISPLAY=:0 xset s off 2>/dev/null || true
   DISPLAY=:0 xset -dpms 2>/dev/null || true
 
-  DISPLAY=:0 "$chromium_bin" \
-    --kiosk --incognito \
+  # Override Debian default CHROMIUM_FLAGS (extensions, accessibility etc.)
+  export CHROMIUM_FLAGS=""
+
+  # dbus-run-session is CRITICAL — without it Chromium exits after ~10s
+  DISPLAY=:0 dbus-run-session "$chromium_bin" \
+    --kiosk \
     --no-first-run --disable-infobars \
     --disable-session-crashed-bubble \
     --disable-features=TranslateUI,Translate \
@@ -300,7 +299,7 @@ start_chromium_kiosk() {
     --disable-dev-shm-usage --no-sandbox \
     --disable-extensions --disable-background-networking \
     --disable-sync --disable-default-apps --disable-component-update \
-    --in-process-gpu \
+    --in-process-gpu --disable-gpu-compositing \
     --user-data-dir="$CHROMIUM_DATA_DIR" \
     "$url" &>/dev/null &
   echo "$!" > "$CHROMIUM_PID_FILE"
