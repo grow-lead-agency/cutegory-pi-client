@@ -28,7 +28,7 @@ fi
 echo ""
 echo "[1/7] Installing dependencies..."
 apt-get update -qq
-apt-get install -y -qq mpv jq curl cec-utils git edid-decode fbgrab
+apt-get install -y -qq mpv jq curl cec-utils git edid-decode fbgrab chromium-browser cage
 
 # [2/7] Create picast user
 echo "[2/7] Creating picast user..."
@@ -72,11 +72,11 @@ else
   echo "  config.env already exists, skipping"
 fi
 
-# Copy standby image if exists
-if [ -f "$SCRIPT_DIR/assets/standby.jpg" ]; then
+# Copy assets (standby screen, test pages)
+if [ -d "$SCRIPT_DIR/assets" ]; then
   mkdir -p "$INSTALL_DIR/assets"
-  cp "$SCRIPT_DIR/assets/standby.jpg" "$INSTALL_DIR/assets/"
-  echo "  Copied standby screen"
+  cp -r "$SCRIPT_DIR/assets/"* "$INSTALL_DIR/assets/" 2>/dev/null || true
+  echo "  Copied assets (standby screen, test pages)"
 fi
 
 # Set ownership

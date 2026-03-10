@@ -64,8 +64,16 @@ get_uptime_sec() {
 }
 
 get_player_status() {
-  local pid_file="$SCRIPT_DIR/.mpv.pid"
-  if [ -f "$pid_file" ] && kill -0 "$(cat "$pid_file")" 2>/dev/null; then
+  # Check orchestrator (hybrid mode), mpv, or chromium
+  local orch_file="$SCRIPT_DIR/.orchestrator.pid"
+  local mpv_file="$SCRIPT_DIR/.mpv.pid"
+  local chr_file="$SCRIPT_DIR/.chromium.pid"
+
+  if [ -f "$orch_file" ] && kill -0 "$(cat "$orch_file")" 2>/dev/null; then
+    echo "playing"
+  elif [ -f "$mpv_file" ] && kill -0 "$(cat "$mpv_file")" 2>/dev/null; then
+    echo "playing"
+  elif [ -f "$chr_file" ] && kill -0 "$(cat "$chr_file")" 2>/dev/null; then
     echo "playing"
   else
     echo "idle"

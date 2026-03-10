@@ -1,0 +1,157 @@
+<!DOCTYPE html>
+<html lang="cs">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>PiCast Web Test</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
+      background: #0a0a0a;
+      color: #fafafa;
+      height: 100vh;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      overflow: hidden;
+    }
+    .container {
+      text-align: center;
+      max-width: 80vw;
+    }
+    .logo {
+      font-size: 4vw;
+      font-weight: 800;
+      letter-spacing: -0.02em;
+      background: linear-gradient(135deg, #ec4899, #8b5cf6, #06b6d4);
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+      background-clip: text;
+      margin-bottom: 2vh;
+    }
+    .status {
+      font-size: 2vw;
+      color: #a1a1aa;
+      margin-bottom: 4vh;
+    }
+    .check {
+      display: inline-flex;
+      align-items: center;
+      gap: 1vw;
+      font-size: 1.8vw;
+      color: #22c55e;
+      margin-bottom: 1.5vh;
+    }
+    .check::before {
+      content: "\2713";
+      font-size: 2.5vw;
+      font-weight: bold;
+    }
+    .info-grid {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 2vw;
+      margin-top: 4vh;
+    }
+    .info-card {
+      background: #18181b;
+      border: 1px solid #27272a;
+      border-radius: 1vw;
+      padding: 2vw;
+      text-align: center;
+    }
+    .info-card .value {
+      font-size: 3vw;
+      font-weight: 700;
+      color: #fafafa;
+    }
+    .info-card .label {
+      font-size: 1.2vw;
+      color: #71717a;
+      margin-top: 0.5vh;
+    }
+    .clock {
+      font-size: 6vw;
+      font-weight: 200;
+      color: #fafafa;
+      margin: 3vh 0;
+      font-variant-numeric: tabular-nums;
+    }
+    .pulse {
+      animation: pulse 2s ease-in-out infinite;
+    }
+    @keyframes pulse {
+      0%, 100% { opacity: 1; }
+      50% { opacity: 0.5; }
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <div class="logo">Cutegory PiCast</div>
+    <div class="status">Web Content Test</div>
+
+    <div class="check">Chromium kiosk mode works</div><br>
+    <div class="check">Display rendering OK</div><br>
+    <div class="check">JavaScript active</div>
+
+    <div class="clock" id="clock">--:--:--</div>
+
+    <div class="info-grid">
+      <div class="info-card">
+        <div class="value" id="resolution">--</div>
+        <div class="label">Resolution</div>
+      </div>
+      <div class="info-card">
+        <div class="value" id="uptime">0s</div>
+        <div class="label">Page Uptime</div>
+      </div>
+      <div class="info-card">
+        <div class="value pulse" id="fps">--</div>
+        <div class="label">FPS</div>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    // Clock
+    function updateClock() {
+      const now = new Date();
+      document.getElementById('clock').textContent =
+        now.toLocaleTimeString('cs-CZ', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+    }
+    setInterval(updateClock, 1000);
+    updateClock();
+
+    // Resolution
+    document.getElementById('resolution').textContent =
+      window.screen.width + 'x' + window.screen.height;
+
+    // Uptime
+    const startTime = Date.now();
+    setInterval(() => {
+      const elapsed = Math.floor((Date.now() - startTime) / 1000);
+      const m = Math.floor(elapsed / 60);
+      const s = elapsed % 60;
+      document.getElementById('uptime').textContent =
+        m > 0 ? m + 'm ' + s + 's' : s + 's';
+    }, 1000);
+
+    // FPS counter
+    let frames = 0;
+    let lastFpsUpdate = performance.now();
+    function countFrames(ts) {
+      frames++;
+      if (ts - lastFpsUpdate >= 1000) {
+        document.getElementById('fps').textContent = frames;
+        frames = 0;
+        lastFpsUpdate = ts;
+      }
+      requestAnimationFrame(countFrames);
+    }
+    requestAnimationFrame(countFrames);
+  </script>
+</body>
+</html>
