@@ -35,6 +35,7 @@ echo "[picast] Poll interval: ${POLL_INTERVAL:-30}s"
 
 POLL_INTERVAL="${POLL_INTERVAL:-30}"
 LAST_CONFIG_HASH=""
+PENDING_COMMAND_RESULTS="[]"
 
 # Load last known hash
 if [ -f "$HASH_FILE" ]; then
@@ -71,6 +72,97 @@ get_player_status() {
   fi
 }
 
+# ---------- command queue ----------
+
+run_cec_test() {
+  local cmd_id="$1"
+  if ! command -v cec-client &>/dev/null; then
+    echo "{\"id\":\"$cmd_id\",\"status\":\"error\",\"result\":{\"error\":\"cec-client not installed\"}}"
+    return
+  fi
+
+  local output
+  output=$(echo "pow 0" | timeout 10 cec-client -s -d 1 2>/dev/null) || true
+  local power
+  power=$(echo "$output" | grep -oP 'power status: \K\w+' || echo "")
+
+  if [ -n "$power" ]; then
+    echo "{\"id\":\"$cmd_id\",\"status\":\"done\",\"result\":{\"cec_supported\":true,\"tv_power\":\"$power\"}}"
+  else
+    echo "{\"id\":\"$cmd_id\",\"status\":\"done\",\"result\":{\"cec_supported\":false,\"tv_power\":\"unknown\"}}"
+  fi
+}
+
+run_cec_action() {
+  local cmd_id="$1"
+  local action="$2"
+  if ! command -v cec-client &>/dev/null; then
+    echo "{\"id\":\"$cmd_id\",\"status\":\"error\",\"result\":{\"error\":\"cec-client not installed\"}}"
+    return
+  fi
+
+  echo "$action" | timeout 10 cec-client -s -d 1 2>/dev/null || true
+  echo "{\"id\":\"$cmd_id\",\"status\":\"done\",\"result\":{\"success\":true}}"
+}
+
+process_commands() {
+  local sync_data="$1"
+  local cmd_count
+  cmd_count=$(echo "$sync_data" | jq -r '.pending_commands | length // 0')
+
+  if [ "$cmd_count" = "0" ] || [ "$cmd_count" = "null" ]; then
+    return
+  fi
+
+  echo "[picast] $(date +%H:%M:%S) Processing $cmd_count pending command(s)"
+
+  local results="[]"
+  local i=0
+  while [ "$i" -lt "$cmd_count" ]; do
+    local cmd_id cmd_name
+    cmd_id=$(echo "$sync_data" | jq -r ".pending_commands[$i].id")
+    cmd_name=$(echo "$sync_data" | jq -r ".pending_commands[$i].command")
+
+    echo "[picast] $(date +%H:%M:%S) Command: $cmd_name ($cmd_id)"
+
+    local result=""
+    case "$cmd_name" in
+      cec_test)
+        result=$(run_cec_test "$cmd_id")
+        ;;
+      cec_on)
+        result=$(run_cec_action "$cmd_id" "on 0")
+        ;;
+      cec_off)
+        result=$(run_cec_action "$cmd_id" "standby 0")
+        ;;
+      reboot)
+        # Send result BEFORE rebooting
+        result="{\"id\":\"$cmd_id\",\"status\":\"done\",\"result\":{\"success\":true}}"
+        PENDING_COMMAND_RESULTS=$(echo "$results" | jq --argjson r "$result" '. + [$r]')
+        echo "[picast] $(date +%H:%M:%S) Reboot command — sending result and rebooting"
+        send_heartbeat
+        sudo reboot
+        exit 0
+        ;;
+      *)
+        echo "[picast] $(date +%H:%M:%S) Unknown command: $cmd_name, ignoring"
+        i=$((i + 1))
+        continue
+        ;;
+    esac
+
+    if [ -n "$result" ]; then
+      results=$(echo "$results" | jq --argjson r "$result" '. + [$r]')
+      echo "[picast] $(date +%H:%M:%S) Command $cmd_name done"
+    fi
+
+    i=$((i + 1))
+  done
+
+  PENDING_COMMAND_RESULTS="$results"
+}
+
 # ---------- heartbeat ----------
 
 send_heartbeat() {
@@ -101,11 +193,17 @@ send_heartbeat() {
     cpu_temp=$(awk '{printf "%.1f", $1/1000}' /sys/class/thermal/thermal_zone0/temp 2>/dev/null || echo "0")
   fi
 
+  # Include command results if any
+  local cmd_results="${PENDING_COMMAND_RESULTS:-[]}"
+
   curl -sf -X POST "${SERVER_URL}/api/v1/signage/heartbeat" \
     -H "X-Device-Token: ${DEVICE_KEY}" \
     -H "Content-Type: application/json" \
-    -d "{\"device_id\":\"${DEVICE_ID}\",\"ip_address\":\"${ip}\",\"free_disk_mb\":${disk},\"uptime_sec\":${uptime},\"player_status\":\"${status}\",\"display_resolution\":\"${display_res}\",\"display_model\":\"${display_model}\",\"display_4k\":${display_4k},\"display_hdr\":${display_hdr},\"display_orientation\":\"${display_orientation}\",\"display_aspect_ratio\":\"${display_aspect}\",\"cpu_temp\":${cpu_temp}}" \
+    -d "{\"device_id\":\"${DEVICE_ID}\",\"ip_address\":\"${ip}\",\"free_disk_mb\":${disk},\"uptime_sec\":${uptime},\"player_status\":\"${status}\",\"display_resolution\":\"${display_res}\",\"display_model\":\"${display_model}\",\"display_4k\":${display_4k},\"display_hdr\":${display_hdr},\"display_orientation\":\"${display_orientation}\",\"display_aspect_ratio\":\"${display_aspect}\",\"cpu_temp\":${cpu_temp},\"command_results\":${cmd_results}}" \
     > /dev/null 2>&1 || echo "[picast] $(date +%H:%M:%S) Heartbeat failed (non-fatal)"
+
+  # Clear command results after sending
+  PENDING_COMMAND_RESULTS="[]"
 }
 
 # ---------- working hours (CEC TV on/off) ----------
@@ -193,6 +291,14 @@ while true; do
     sleep "$POLL_INTERVAL"
     continue
   }
+
+  # Process pending commands (high priority — do before anything else)
+  process_commands "$SYNC"
+
+  # If commands were processed, send heartbeat immediately with results
+  if [ "$PENDING_COMMAND_RESULTS" != "[]" ]; then
+    send_heartbeat
+  fi
 
   # Manage TV power based on working hours
   manage_tv_power "$SYNC"
