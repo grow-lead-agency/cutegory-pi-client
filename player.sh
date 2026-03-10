@@ -249,15 +249,21 @@ start_chromium_kiosk() {
   if [ -z "${DISPLAY:-}" ]; then
     if command -v Xorg &>/dev/null; then
       echo "[player] Starting Xorg for web content..."
-      Xorg :0 vt7 -keeptty -noreset &>/dev/null &
+      # Check DRM is free before starting Xorg
+      if fuser /dev/dri/card0 &>/dev/null 2>&1; then
+        echo "[player] WARNING: DRM still busy, waiting..."
+        sleep 3
+      fi
+      Xorg :0 vt7 -keeptty -noreset 2>/tmp/picast-xorg.log &
       XORG_PID=$!
       echo "$XORG_PID" > "$SCRIPT_DIR/.xorg.pid"
-      sleep 3
+      sleep 4
       if kill -0 "$XORG_PID" 2>/dev/null; then
         export DISPLAY=:0
         echo "[player] Xorg started on :0 (PID: $XORG_PID)"
       else
         echo "[player] ERROR: Xorg failed to start"
+        cat /tmp/picast-xorg.log 2>/dev/null | grep "EE" | tail -3
         rm -f "$SCRIPT_DIR/.xorg.pid"
         return 1
       fi
@@ -308,8 +314,16 @@ play_mpv_segment() {
   sleep "$total_duration"
 
   stop_mpv
-  # Brief pause to ensure DRM is fully released before cage can acquire it
-  sleep 1
+  # Wait for DRM to be fully released (mpv holds it briefly after kill)
+  local drm_wait=0
+  while [ "$drm_wait" -lt 10 ]; do
+    if ! fuser /dev/dri/card0 &>/dev/null 2>&1; then
+      break
+    fi
+    sleep 0.5
+    drm_wait=$((drm_wait + 1))
+  done
+  echo "[player] DRM released after ${drm_wait} checks"
 }
 
 # ---------- parse segments from sync data ----------
