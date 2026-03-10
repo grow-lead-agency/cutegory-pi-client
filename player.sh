@@ -251,13 +251,24 @@ start_chromium_kiosk() {
 
   echo "[player] Chromium kiosk: $url (${duration}s)"
 
+  # Use binary directly to bypass /usr/bin/chromium wrapper
+  # (wrapper sources /etc/chromium.d/* adding unwanted flags)
   local chromium_bin=""
-  for bin in chromium chromium-browser google-chrome; do
-    if command -v "$bin" &>/dev/null; then
+  for bin in /usr/lib/chromium/chromium /usr/lib/chromium-browser/chromium-browser; do
+    if [ -x "$bin" ]; then
       chromium_bin="$bin"
       break
     fi
   done
+  # Fallback to wrapper if binary not found
+  if [ -z "$chromium_bin" ]; then
+    for bin in chromium chromium-browser; do
+      if command -v "$bin" &>/dev/null; then
+        chromium_bin="$bin"
+        break
+      fi
+    done
+  fi
 
   if [ -z "$chromium_bin" ]; then
     echo "[player] ERROR: No Chromium browser found, skipping web item"
