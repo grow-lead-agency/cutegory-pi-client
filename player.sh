@@ -211,7 +211,7 @@ build_mpv_args() {
 
   # ---------- Audio ----------
   local audio_enabled
-  audio_enabled=$(echo "$sync" | jq -r '.settings.audio_enabled // true')
+  audio_enabled=$(echo "$sync" | jq -r '.settings.audio_enabled // false')
   if [ "$audio_enabled" = "false" ]; then
     MPV_ARGS+=(--no-audio)
     echo "[player] Audio: disabled"
