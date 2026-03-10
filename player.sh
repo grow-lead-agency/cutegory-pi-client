@@ -123,7 +123,7 @@ stop_all() {
     rm -f "$pidfile"
   done
   sleep 1
-  rm -f /tmp/.X0-lock /tmp/.X11-unix/X0 2>/dev/null || true
+  rm -f /tmp/.X0-lock /tmp/.X11-unix/X0 /tmp/mpv-socket 2>/dev/null || true
 }
 
 # ---------- Xorg management ----------
