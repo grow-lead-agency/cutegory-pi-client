@@ -89,6 +89,21 @@ if [ -f "systemd/picast.service" ]; then
   systemctl daemon-reload
 fi
 
+# Auto-install missing dependencies (if deps file changed)
+DEPS_FILE="$INSTALL_DIR/.installed-deps-hash"
+NEW_DEPS_HASH=$(md5sum "$UPDATE_DIR/install.sh" 2>/dev/null | cut -d' ' -f1 || echo "")
+OLD_DEPS_HASH=$(cat "$DEPS_FILE" 2>/dev/null || echo "")
+if [ -n "$NEW_DEPS_HASH" ] && [ "$NEW_DEPS_HASH" != "$OLD_DEPS_HASH" ]; then
+  log "Checking for new dependencies..."
+  for pkg in chromium-browser cage fbgrab; do
+    if ! dpkg -l "$pkg" &>/dev/null 2>&1; then
+      log "Installing missing dependency: $pkg"
+      apt-get install -y -qq "$pkg" 2>/dev/null || log "WARN: Failed to install $pkg"
+    fi
+  done
+  echo "$NEW_DEPS_HASH" > "$DEPS_FILE"
+fi
+
 # Fix ownership
 chown -R picast:picast "$INSTALL_DIR"
 
