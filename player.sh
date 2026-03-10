@@ -20,6 +20,7 @@ CHROMIUM_PID_FILE="$SCRIPT_DIR/.chromium.pid"
 XORG_PID_FILE="$SCRIPT_DIR/.xorg.pid"
 MPV_LOG="${LOG_DIR:-/opt/picast/logs}/mpv.log"
 ORCHESTRATOR_PID_FILE="$SCRIPT_DIR/.orchestrator.pid"
+CHROMIUM_DATA_DIR="$CHROMIUM_DATA_DIR-$(id -u)"
 
 ACTION="${1:-}"
 SYNC_DATA="${2:-}"
@@ -76,8 +77,8 @@ stop_chromium() {
     rm -f "$CHROMIUM_PID_FILE"
   fi
   pkill -f "chromium.*--kiosk.*picast" 2>/dev/null || true
-  # Clean profile lock to prevent SingletonLock permission errors on restart
-  rm -rf /tmp/picast-chromium/SingletonLock /tmp/picast-chromium/SingletonSocket 2>/dev/null || true
+  # Clean profile to prevent SingletonLock permission errors on restart
+  rm -rf "$CHROMIUM_DATA_DIR" 2>/dev/null || true
 }
 
 stop_mpv() {
@@ -277,7 +278,7 @@ start_chromium_kiosk() {
   fi
 
   # Clear Chromium crashed state (prevents "restore pages" dialog)
-  local chromium_prefs="/tmp/picast-chromium/Default/Preferences"
+  local chromium_prefs="$CHROMIUM_DATA_DIR/Default/Preferences"
   if [ -f "$chromium_prefs" ]; then
     sed -i 's/"exited_cleanly":false/"exited_cleanly":true/' "$chromium_prefs" 2>/dev/null
     sed -i 's/"exit_type":"Crashed"/"exit_type":"Normal"/' "$chromium_prefs" 2>/dev/null
@@ -301,7 +302,7 @@ start_chromium_kiosk() {
     --disable-sync --disable-default-apps --disable-component-update \
     --renderer-process-limit=1 \
     --disk-cache-dir=/dev/null \
-    --user-data-dir=/tmp/picast-chromium \
+    --user-data-dir=$CHROMIUM_DATA_DIR \
     "$url" &>/dev/null &
   echo "$!" > "$CHROMIUM_PID_FILE"
   echo "[player] Chromium started (PID: $(cat "$CHROMIUM_PID_FILE"))"
