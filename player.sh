@@ -230,15 +230,22 @@ start_chromium_kiosk() {
     --app="$url"
   )
 
+  # Ensure XDG_RUNTIME_DIR exists (required by cage/Wayland)
+  export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/tmp/picast-runtime}"
+  mkdir -p "$XDG_RUNTIME_DIR"
+
   # Check if we have a display server
   if [ -n "${DISPLAY:-}" ] || [ -n "${WAYLAND_DISPLAY:-}" ]; then
     # X11 or Wayland available
     "$chromium_bin" "${chromium_args[@]}" &>/dev/null &
     echo "$!" > "$CHROMIUM_PID_FILE"
   elif command -v cage &>/dev/null; then
-    # Use cage (minimal Wayland compositor for kiosk)
-    cage -- "$chromium_bin" "${chromium_args[@]}" &>/dev/null &
+    # Use cage (minimal Wayland compositor for kiosk on DRM)
+    # WLR_BACKENDS=drm forces DRM output (headless Pi, no X11)
+    WLR_BACKENDS=drm cage -- "$chromium_bin" "${chromium_args[@]}" &>/dev/null &
     echo "$!" > "$CHROMIUM_PID_FILE"
+    # Give cage time to acquire DRM and start Chromium
+    sleep 3
   else
     # Fallback: start minimal X server just for Chromium
     if command -v xinit &>/dev/null; then
@@ -282,6 +289,8 @@ play_mpv_segment() {
   sleep "$total_duration"
 
   stop_mpv
+  # Brief pause to ensure DRM is fully released before cage can acquire it
+  sleep 1
 }
 
 # ---------- parse segments from sync data ----------
