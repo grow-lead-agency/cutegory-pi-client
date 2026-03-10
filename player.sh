@@ -200,7 +200,7 @@ start_chromium_kiosk() {
   # For DRM-only Pi, we use cage (minimal Wayland compositor) if available,
   # otherwise fall back to X with xinit
   local chromium_bin=""
-  for bin in chromium-browser chromium google-chrome; do
+  for bin in chromium chromium-browser google-chrome; do
     if command -v "$bin" &>/dev/null; then
       chromium_bin="$bin"
       break
