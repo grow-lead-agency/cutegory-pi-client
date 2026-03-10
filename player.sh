@@ -287,9 +287,17 @@ start_chromium_kiosk() {
   # Override Debian default CHROMIUM_FLAGS (extensions, accessibility etc.)
   export CHROMIUM_FLAGS=""
 
+  # Get actual display resolution for fullscreen
+  local screen_w screen_h
+  screen_w=$(DISPLAY=:0 xdpyinfo 2>/dev/null | grep 'dimensions:' | awk '{print $2}' | cut -dx -f1)
+  screen_h=$(DISPLAY=:0 xdpyinfo 2>/dev/null | grep 'dimensions:' | awk '{print $2}' | cut -dx -f2)
+  screen_w="${screen_w:-1920}"
+  screen_h="${screen_h:-1080}"
+
   # dbus-run-session is CRITICAL — without it Chromium exits after ~10s
   DISPLAY=:0 dbus-run-session "$chromium_bin" \
-    --kiosk \
+    --kiosk --start-fullscreen --start-maximized \
+    --window-size="${screen_w},${screen_h}" --window-position=0,0 \
     --no-first-run --disable-infobars \
     --disable-session-crashed-bubble \
     --disable-features=TranslateUI,Translate \
