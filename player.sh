@@ -412,52 +412,47 @@ run_orchestrator() {
 
   (
     while true; do
-      local i=0
-      while [ "$i" -lt "$segment_count" ]; do
-        local segment
-        segment=$(echo "$segments" | jq -c ".[$i]")
-        local seg_type
-        seg_type=$(echo "$segment" | jq -r '.type')
-        local seg_duration
-        seg_duration=$(echo "$segment" | jq -r '.total_duration')
+      _i=0
+      while [ "$_i" -lt "$segment_count" ]; do
+        _segment=$(echo "$segments" | jq -c ".[$_i]")
+        _seg_type=$(echo "$_segment" | jq -r '.type')
+        _seg_duration=$(echo "$_segment" | jq -r '.total_duration')
 
-        if [ "$seg_type" = "media" ]; then
-          local seg_playlist="/tmp/picast-segment-${i}.txt"
-          > "$seg_playlist"
+        if [ "$_seg_type" = "media" ]; then
+          _seg_playlist="/tmp/picast-segment-${_i}.txt"
+          > "$_seg_playlist"
 
-          echo "$segment" | jq -r '.items[] | .url' | while read -r url; do
-            local filename
-            filename=$(basename "$url")
-            local local_path="$MEDIA_DIR/$filename"
-            if [ -f "$local_path" ]; then
-              local fsize
-              fsize=$(stat -c%s "$local_path" 2>/dev/null || echo 0)
-              if [ "$fsize" -ge 1024 ]; then
-                echo "$local_path" >> "$seg_playlist"
+          echo "$_segment" | jq -r '.items[] | .url' | while read -r url; do
+            _filename=$(basename "$url")
+            _local_path="$MEDIA_DIR/$_filename"
+            if [ -f "$_local_path" ]; then
+              _fsize=$(stat -c%s "$_local_path" 2>/dev/null || echo 0)
+              if [ "$_fsize" -ge 1024 ]; then
+                echo "$_local_path" >> "$_seg_playlist"
               fi
             fi
           done
 
-          play_mpv_segment "$seg_playlist" "$seg_duration"
-          rm -f "$seg_playlist"
+          play_mpv_segment "$_seg_playlist" "$_seg_duration"
+          rm -f "$_seg_playlist"
 
-        elif [ "$seg_type" = "web" ]; then
-          echo "$segment" | jq -c '.items[]' | while read -r web_item; do
-            local web_url web_duration
-            web_url=$(echo "$web_item" | jq -r '.web_url // empty')
-            web_duration=$(echo "$web_item" | jq -r '.duration_sec // 30')
-            if [ -n "$web_url" ]; then
-              start_chromium_kiosk "$web_url" "$web_duration"
+        elif [ "$_seg_type" = "web" ]; then
+          echo "$_segment" | jq -c '.items[]' | while read -r _web_item; do
+            _web_url=$(echo "$_web_item" | jq -r '.web_url // empty')
+            _web_duration=$(echo "$_web_item" | jq -r '.duration_sec // 30')
+            if [ -n "$_web_url" ]; then
+              start_chromium_kiosk "$_web_url" "$_web_duration"
             fi
           done
         fi
 
-        i=$((i + 1))
+        _i=$((_i + 1))
       done
 
       echo "[player] Orchestrator: loop complete, restarting playlist"
     done
   ) &
+  disown
 
   echo "$!" > "$ORCHESTRATOR_PID_FILE"
   echo "[player] Orchestrator started (PID: $(cat "$ORCHESTRATOR_PID_FILE"))"
