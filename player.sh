@@ -159,16 +159,12 @@ build_mpv_args() {
     MPV_ARGS+=(--vo=gpu)
   fi
 
-  # ---------- Smooth transitions (crossfade between images) ----------
-  # mpv supports --image-display-duration with fade via lavfi filters
-  if [ "$transition_duration" != "0" ]; then
-    # Use blend-subtitles workaround: fade to black between items
-    # This is the most reliable approach on DRM output
-    MPV_ARGS+=(
-      --vf="fade=t=in:st=0:d=${transition_duration},fade=t=out:st=$((image_duration - transition_duration)):d=${transition_duration}"
-    )
-    echo "[player] Transitions: ${transition_duration}s fade in/out"
-  fi
+  # ---------- Smooth transitions ----------
+  # Note: lavfi fade filters don't work well with --image-display-duration
+  # on static images (causes immediate EOF). For now, we rely on mpv's
+  # native playlist advancement which is instant but clean (black frame gap ~0ms).
+  # True crossfade would require pre-rendering a video from images via ffmpeg.
+  echo "[player] Transitions: native (instant cut)"
 
   # ---------- Scaling for best quality ----------
   MPV_ARGS+=(
