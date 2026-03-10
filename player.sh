@@ -297,11 +297,10 @@ start_chromium_kiosk() {
     --disable-translate \
     --noerrdialogs --disable-pinch --overscroll-history-navigation=0 \
     --hide-scrollbars --autoplay-policy=no-user-gesture-required \
-    --disable-dev-shm-usage --disable-gpu-sandbox --no-sandbox \
+    --disable-dev-shm-usage --no-sandbox \
     --disable-extensions --disable-background-networking \
     --disable-sync --disable-default-apps --disable-component-update \
-    --renderer-process-limit=1 \
-    --disk-cache-dir=/dev/null \
+    --in-process-gpu \
     --user-data-dir="$CHROMIUM_DATA_DIR" \
     "$url" &>/dev/null &
   echo "$!" > "$CHROMIUM_PID_FILE"
