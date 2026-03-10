@@ -249,13 +249,15 @@ start_chromium_kiosk() {
   fi
 
   DISPLAY=:0 "$chromium_bin" \
-    --kiosk --no-first-run --disable-infobars \
+    --kiosk --start-fullscreen --start-maximized \
+    --no-first-run --disable-infobars \
     --disable-session-crashed-bubble --disable-features=TranslateUI \
     --noerrdialogs --disable-pinch --overscroll-history-navigation=0 \
     --hide-scrollbars --autoplay-policy=no-user-gesture-required \
     --disable-dev-shm-usage --disable-gpu-sandbox --no-sandbox \
     --user-data-dir=/tmp/picast-chromium \
     --window-size="${DISPLAY_WIDTH},${DISPLAY_HEIGHT}" \
+    --window-position=0,0 \
     --app="$url" &>/dev/null &
   echo "$!" > "$CHROMIUM_PID_FILE"
   echo "[player] Chromium started (PID: $(cat "$CHROMIUM_PID_FILE"))"
