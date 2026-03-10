@@ -132,6 +132,28 @@ systemctl disable bluetooth.service 2>/dev/null || true
 systemctl disable avahi-daemon.service 2>/dev/null || true
 echo "  Disabled: bluetooth, avahi"
 
+# Disable SSH password auth (key-only via Tailscale)
+if ! grep -q "^PasswordAuthentication no" /etc/ssh/sshd_config 2>/dev/null; then
+  sed -i 's/^#*PasswordAuthentication.*/PasswordAuthentication no/' /etc/ssh/sshd_config
+  sed -i 's/^#*ChallengeResponseAuthentication.*/ChallengeResponseAuthentication no/' /etc/ssh/sshd_config
+  systemctl reload sshd 2>/dev/null || true
+  echo "  SSH: password auth disabled (key-only)"
+fi
+
+# Restrict config.env permissions (contains device secrets)
+chmod 600 "$INSTALL_DIR/config.env" 2>/dev/null || true
+echo "  config.env: owner-only read (600)"
+
+# Enable unattended security updates
+if ! dpkg -l unattended-upgrades &>/dev/null; then
+  apt-get install -y -qq unattended-upgrades
+  echo 'Unattended-Upgrade::Origins-Pattern { "origin=Debian,codename=${distro_codename},label=Debian-Security"; };' \
+    > /etc/apt/apt.conf.d/51picast-auto-security
+  echo 'Unattended-Upgrade::Automatic-Reboot "false";' >> /etc/apt/apt.conf.d/51picast-auto-security
+  systemctl enable unattended-upgrades
+  echo "  Unattended security updates: enabled"
+fi
+
 # [7/8] Configure boot for signage
 echo "[7/8] Configuring boot..."
 
