@@ -1,42 +1,75 @@
 #!/bin/bash
 # =============================================================================
-# Cutegory PiCast — Self-update from GitHub
-# Pulls latest scripts, reinstalls if changed, restarts service
-# Runs on boot (systemd) + daily cron
+# Cutegory PiCast — Self-update via GitHub tarball (public repo)
+# Downloads latest release, compares hash, installs if changed
+# Runs on boot (systemd timer) + daily at 04:00
 # =============================================================================
 
 set -euo pipefail
 
-REPO_URL="https://github.com/grow-lead-agency/cutegory-pi-client.git"
-REPO_DIR="/opt/picast/repo"
 INSTALL_DIR="/opt/picast"
+UPDATE_DIR="/tmp/picast-update"
 LOG_FILE="${INSTALL_DIR}/logs/update.log"
+HASH_FILE="${INSTALL_DIR}/.update-hash"
+CONFIG_FILE="${INSTALL_DIR}/config.env"
+
+# Load config
+if [ -f "$CONFIG_FILE" ]; then
+  # shellcheck source=config.env.example
+  source "$CONFIG_FILE"
+fi
+
+REPO="${GITHUB_REPO:-grow-lead-agency/cutegory-pi-client}"
+BRANCH="${GITHUB_BRANCH:-main}"
 
 log() { echo "[update] $(date +%Y-%m-%d\ %H:%M:%S) $*" | tee -a "$LOG_FILE"; }
 
 mkdir -p "$(dirname "$LOG_FILE")"
 
-# Clone or pull
-if [ -d "$REPO_DIR/.git" ]; then
-  cd "$REPO_DIR"
-  OLD_HEAD=$(git rev-parse HEAD)
-  git fetch --quiet origin main 2>/dev/null || { log "Fetch failed (offline?)"; exit 0; }
-  git reset --hard origin/main --quiet
-  NEW_HEAD=$(git rev-parse HEAD)
+# Get latest commit SHA (public repo — no token needed)
+LATEST_SHA=$(curl -sf \
+  "https://api.github.com/repos/${REPO}/commits/${BRANCH}" 2>/dev/null | \
+  jq -r '.sha // empty') || { log "Failed to check for updates (offline?)"; exit 0; }
 
-  if [ "$OLD_HEAD" = "$NEW_HEAD" ]; then
-    log "Already up to date ($OLD_HEAD)"
+if [ -z "$LATEST_SHA" ]; then
+  log "Failed to get latest commit SHA"
+  exit 0
+fi
+
+# Compare with last installed version
+CURRENT_SHA=""
+if [ -f "$HASH_FILE" ]; then
+  CURRENT_SHA=$(cat "$HASH_FILE")
+fi
+
+if [ "$LATEST_SHA" = "$CURRENT_SHA" ]; then
+  log "Already up to date (${LATEST_SHA:0:7})"
+  exit 0
+fi
+
+log "Update available: ${CURRENT_SHA:0:7} -> ${LATEST_SHA:0:7}"
+
+# Download tarball (public repo — no auth needed)
+rm -rf "$UPDATE_DIR"
+mkdir -p "$UPDATE_DIR"
+
+curl -sfL \
+  "https://api.github.com/repos/${REPO}/tarball/${BRANCH}" | \
+  tar xz -C "$UPDATE_DIR" --strip-components=1 2>/dev/null || {
+    log "Download failed"
+    rm -rf "$UPDATE_DIR"
     exit 0
-  fi
-  log "Updated: $OLD_HEAD -> $NEW_HEAD"
-else
-  log "Cloning repository..."
-  git clone --depth 1 --branch main "$REPO_URL" "$REPO_DIR" 2>/dev/null || { log "Clone failed (offline?)"; exit 0; }
-  log "Clone complete"
+  }
+
+# Verify download has expected files
+if [ ! -f "$UPDATE_DIR/picast-client.sh" ]; then
+  log "ERROR: Downloaded archive missing picast-client.sh"
+  rm -rf "$UPDATE_DIR"
+  exit 0
 fi
 
 # Copy updated scripts (never touch config.env)
-cd "$REPO_DIR"
+cd "$UPDATE_DIR"
 for script in picast-client.sh sync.sh player.sh cec-control.sh display-detect.sh picast-ctl.sh self-update.sh; do
   if [ -f "$script" ]; then
     cp "$script" "$INSTALL_DIR/$script"
@@ -50,7 +83,7 @@ if [ -d "assets" ]; then
   cp -r assets/* "$INSTALL_DIR/assets/" 2>/dev/null || true
 fi
 
-# Copy updated systemd service
+# Copy updated systemd services
 if [ -f "systemd/picast.service" ]; then
   cp "systemd/picast.service" /etc/systemd/system/picast.service
   systemctl daemon-reload
@@ -59,7 +92,13 @@ fi
 # Fix ownership
 chown -R picast:picast "$INSTALL_DIR"
 
-log "Files updated, restarting picast..."
+# Save current version
+echo "$LATEST_SHA" > "$HASH_FILE"
+
+# Cleanup
+rm -rf "$UPDATE_DIR"
+
+log "Updated to ${LATEST_SHA:0:7}, restarting picast..."
 systemctl restart picast
 
 log "Update complete"
