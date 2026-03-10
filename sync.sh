@@ -32,6 +32,15 @@ ITEMS=$(echo "$SYNC_DATA" | jq -r '.items[] | select(.item_type == "media") | .u
 
 mkdir -p "$MEDIA_DIR"
 
+# ---------- Disk space check ----------
+MIN_FREE_MB=200
+free_mb=$(df -m "$MEDIA_DIR" 2>/dev/null | awk 'NR==2{print $4}')
+if [ "${free_mb:-0}" -lt "$MIN_FREE_MB" ]; then
+  echo "[sync] WARNING: Low disk space (${free_mb}MB free, need ${MIN_FREE_MB}MB) — skipping downloads"
+  echo "[sync] Playing existing cached media"
+  exit 0
+fi
+
 # Track which files are needed
 declare -A needed_files=()
 
@@ -54,9 +63,25 @@ for entry in $ITEMS; do
     continue
   fi
 
+  # Re-check disk space before each download
+  free_mb=$(df -m "$MEDIA_DIR" 2>/dev/null | awk 'NR==2{print $4}')
+  if [ "${free_mb:-0}" -lt "$MIN_FREE_MB" ]; then
+    echo "[sync] WARNING: Disk full, stopping downloads (${free_mb}MB free)"
+    break
+  fi
+
   # Download file
   echo "[sync] Downloading: $filename"
   if curl -sf -o "$local_path.tmp" "$url"; then
+    # Validate downloaded file (not empty, not HTML error page)
+    local tmp_size
+    tmp_size=$(stat -c%s "$local_path.tmp" 2>/dev/null || echo 0)
+    if [ "$tmp_size" -lt 1024 ]; then
+      echo "[sync] ERROR: Downloaded file too small ($tmp_size bytes), skipping $filename"
+      rm -f "$local_path.tmp"
+      continue
+    fi
+
     mv "$local_path.tmp" "$local_path"
     echo "[sync] Downloaded: $filename ($(du -h "$local_path" | cut -f1))"
   else

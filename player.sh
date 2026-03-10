@@ -93,7 +93,14 @@ generate_playlist() {
     local local_path="$MEDIA_DIR/$filename"
 
     if [ -f "$local_path" ]; then
-      echo "$local_path" >> "$PLAYLIST_FILE"
+      # Skip empty/corrupt files (< 1KB)
+      local fsize
+      fsize=$(stat -c%s "$local_path" 2>/dev/null || echo 0)
+      if [ "$fsize" -lt 1024 ]; then
+        echo "[player] WARN: Skipping corrupt/empty file: $filename ($fsize bytes)"
+      else
+        echo "$local_path" >> "$PLAYLIST_FILE"
+      fi
     else
       echo "[player] WARN: Missing media file: $filename"
     fi

@@ -93,6 +93,42 @@ run_cec_test() {
   fi
 }
 
+run_screenshot() {
+  local cmd_id="$1"
+  local screenshot_path="/tmp/picast-screenshot.jpg"
+
+  if [ -f "$SCRIPT_DIR/.mpv.pid" ] && kill -0 "$(cat "$SCRIPT_DIR/.mpv.pid")" 2>/dev/null; then
+    # Use framebuffer capture (DRM doesn't support mpv --screenshot)
+    if command -v fbgrab &>/dev/null; then
+      fbgrab -c 90 "$screenshot_path" 2>/dev/null || true
+    elif [ -e /dev/fb0 ]; then
+      cat /dev/fb0 | ffmpeg -f rawvideo -pix_fmt bgra -s "$(cat /sys/class/graphics/fb0/virtual_size | tr ',' 'x')" -i - -frames:v 1 -q:v 5 "$screenshot_path" -y 2>/dev/null || true
+    fi
+
+    if [ -f "$screenshot_path" ] && [ -s "$screenshot_path" ]; then
+      # Upload to R2
+      local ts
+      ts=$(date +%Y%m%d-%H%M%S)
+      local r2_path="screenshots/${DEVICE_ID}/${ts}.jpg"
+      local upload_url="${R2_BASE_URL:-https://signage-media.cutegory.cz}/${r2_path}"
+
+      # Upload via server endpoint (Pi doesn't have R2 write credentials)
+      local upload_result
+      upload_result=$(curl -sf -X POST "${SERVER_URL}/api/v1/signage/heartbeat" \
+        -H "X-Device-Token: ${DEVICE_KEY}" \
+        -H "Content-Type: application/json" \
+        -d "{\"device_id\":\"${DEVICE_ID}\",\"screenshot_path\":\"${r2_path}\"}" 2>/dev/null) || true
+
+      echo "{\"id\":\"$cmd_id\",\"status\":\"done\",\"result\":{\"success\":true,\"path\":\"$screenshot_path\"}}"
+    else
+      echo "{\"id\":\"$cmd_id\",\"status\":\"error\",\"result\":{\"error\":\"screenshot capture failed\"}}"
+    fi
+    rm -f "$screenshot_path"
+  else
+    echo "{\"id\":\"$cmd_id\",\"status\":\"error\",\"result\":{\"error\":\"player not running\"}}"
+  fi
+}
+
 run_cec_action() {
   local cmd_id="$1"
   local action="$2"
@@ -135,6 +171,9 @@ process_commands() {
         ;;
       cec_off)
         result=$(run_cec_action "$cmd_id" "standby 0")
+        ;;
+      screenshot)
+        result=$(run_screenshot "$cmd_id")
         ;;
       reboot)
         # Send result BEFORE rebooting
