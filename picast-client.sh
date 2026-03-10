@@ -286,6 +286,36 @@ check_working_hours() {
   return 0  # within working hours
 }
 
+# ---------- update splash ----------
+
+SPLASH_PID_FILE="$SCRIPT_DIR/.splash.pid"
+
+show_splash() {
+  local splash_img="$SCRIPT_DIR/assets/updating.jpg"
+  [ -f "$splash_img" ] || return 0
+
+  # Stop current player first so DRM is free
+  "$SCRIPT_DIR/player.sh" stop 2>/dev/null || true
+  sleep 0.5
+
+  # Show splash via mpv DRM (brief, non-blocking)
+  "${PLAYER_BIN:-mpv}" --vo=drm --fs --no-terminal --no-audio --really-quiet \
+    --image-display-duration=inf "$splash_img" &
+  echo "$!" > "$SPLASH_PID_FILE"
+  echo "[picast] $(date +%H:%M:%S) Showing update splash"
+}
+
+hide_splash() {
+  if [ -f "$SPLASH_PID_FILE" ]; then
+    local pid
+    pid=$(cat "$SPLASH_PID_FILE")
+    kill "$pid" 2>/dev/null || true
+    sleep 0.3
+    kill -9 "$pid" 2>/dev/null || true
+    rm -f "$SPLASH_PID_FILE"
+  fi
+}
+
 TV_IS_OFF=false
 
 manage_tv_power() {
@@ -323,6 +353,7 @@ manage_tv_power() {
 
 cleanup() {
   echo "[picast] Shutting down..."
+  hide_splash 2>/dev/null || true
   "$SCRIPT_DIR/player.sh" stop 2>/dev/null || true
   exit 0
 }
@@ -368,11 +399,17 @@ while true; do
   if [ "$NEW_HASH" != "$LAST_CONFIG_HASH" ]; then
     echo "[picast] $(date +%H:%M:%S) Config changed ($LAST_CONFIG_HASH -> $NEW_HASH)"
 
+    # Show updating splash while syncing
+    show_splash
+
     # Save sync data
     echo "$SYNC" > "$SYNC_CACHE"
 
     # Sync media files
     "$SCRIPT_DIR/sync.sh" "$SYNC"
+
+    # Hide splash and start new playlist
+    hide_splash
 
     # Restart player with new playlist
     "$SCRIPT_DIR/player.sh" restart "$SYNC"
