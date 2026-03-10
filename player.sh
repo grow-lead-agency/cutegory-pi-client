@@ -1,8 +1,9 @@
 #!/bin/bash
 # =============================================================================
-# Cutegory PiCast — Hybrid player orchestrator (v3)
+# Cutegory PiCast — Hybrid player orchestrator (v4)
 # Plays media via mpv + web URLs via Chromium kiosk
-# Display-aware, 4K ready, smooth transitions, all-day reliability
+# Media-only: mpv DRM (direct, no X11)
+# Hybrid: Xorg persistent + mpv X11 + Chromium kiosk (shared display)
 # =============================================================================
 
 set -uo pipefail
@@ -16,6 +17,7 @@ MEDIA_DIR="${MEDIA_DIR:-/opt/picast/media}"
 PLAYLIST_FILE="$SCRIPT_DIR/.current-playlist.txt"
 MPV_PID_FILE="$SCRIPT_DIR/.mpv.pid"
 CHROMIUM_PID_FILE="$SCRIPT_DIR/.chromium.pid"
+XORG_PID_FILE="$SCRIPT_DIR/.xorg.pid"
 MPV_LOG="${LOG_DIR:-/opt/picast/logs}/mpv.log"
 ORCHESTRATOR_PID_FILE="$SCRIPT_DIR/.orchestrator.pid"
 
@@ -43,7 +45,23 @@ detect_display() {
   [ "$DISPLAY_HDR" = "true" ] && echo "[player] HDR capable display detected"
 }
 
-# ---------- stop all players ----------
+# ---------- stop helpers ----------
+
+stop_xorg() {
+  if [ -f "$XORG_PID_FILE" ]; then
+    local pid
+    pid=$(cat "$XORG_PID_FILE")
+    if kill -0 "$pid" 2>/dev/null; then
+      echo "[player] Stopping Xorg (PID: $pid)"
+      kill "$pid" 2>/dev/null || true
+      sleep 1
+      kill -9 "$pid" 2>/dev/null || true
+    fi
+    rm -f "$XORG_PID_FILE"
+  fi
+  pkill -f "Xorg.*:0" 2>/dev/null || true
+  unset DISPLAY 2>/dev/null || true
+}
 
 stop_chromium() {
   if [ -f "$CHROMIUM_PID_FILE" ]; then
@@ -57,22 +75,7 @@ stop_chromium() {
     fi
     rm -f "$CHROMIUM_PID_FILE"
   fi
-  # Clean up any stray chromium processes
   pkill -f "chromium.*--kiosk.*picast" 2>/dev/null || true
-  # Stop Xorg server (frees DRM for mpv)
-  if [ -f "$SCRIPT_DIR/.xorg.pid" ]; then
-    local xpid
-    xpid=$(cat "$SCRIPT_DIR/.xorg.pid")
-    kill "$xpid" 2>/dev/null || true
-    sleep 0.5
-    kill -9 "$xpid" 2>/dev/null || true
-    rm -f "$SCRIPT_DIR/.xorg.pid"
-    echo "[player] Xorg stopped (DRM released)"
-  fi
-  pkill -f "Xorg.*:0" 2>/dev/null || true
-  unset DISPLAY
-  # Wait for DRM to be fully released
-  sleep 1
 }
 
 stop_mpv() {
@@ -105,18 +108,54 @@ stop_all() {
   stop_orchestrator
   stop_chromium
   stop_mpv
+  stop_xorg
+}
+
+# ---------- Xorg management ----------
+
+ensure_xorg() {
+  # Check if Xorg is already running
+  if [ -f "$XORG_PID_FILE" ] && kill -0 "$(cat "$XORG_PID_FILE")" 2>/dev/null; then
+    export DISPLAY=:0
+    return 0
+  fi
+
+  if ! command -v Xorg &>/dev/null; then
+    echo "[player] ERROR: Xorg not found. Install: sudo apt-get install xserver-xorg-core"
+    return 1
+  fi
+
+  echo "[player] Starting Xorg..."
+  Xorg :0 vt7 -keeptty -noreset 2>/tmp/picast-xorg.log &
+  local xpid=$!
+  echo "$xpid" > "$XORG_PID_FILE"
+  sleep 4
+
+  if kill -0 "$xpid" 2>/dev/null; then
+    export DISPLAY=:0
+    echo "[player] Xorg started on :0 (PID: $xpid)"
+    # Hide cursor
+    if command -v unclutter &>/dev/null; then
+      DISPLAY=:0 unclutter -idle 0 -root &>/dev/null &
+    fi
+    return 0
+  else
+    echo "[player] ERROR: Xorg failed to start"
+    cat /tmp/picast-xorg.log 2>/dev/null | grep "EE" | tail -5
+    rm -f "$XORG_PID_FILE"
+    return 1
+  fi
 }
 
 # ---------- build mpv args ----------
 
 build_mpv_args() {
   local sync="$1"
+  local use_x11="${2:-false}"
 
-  # Get image duration from sync data (or default 10s)
   local image_duration
   image_duration=$(echo "$sync" | jq -r '[.items[] | select(.item_type == "media" and .type == "image") | .duration_sec][0] // 10')
 
-  # ---------- Core args ----------
   MPV_ARGS=(
     --fs
     --no-terminal
@@ -125,80 +164,58 @@ build_mpv_args() {
     --no-osd-bar
     --log-file="$MPV_LOG"
     --really-quiet
-  )
-
-  # ---------- Image display ----------
-  MPV_ARGS+=(
     --image-display-duration="$image_duration"
-  )
-
-  # ---------- Hardware decoding (Pi 4 V4L2 / VAAPI) ----------
-  MPV_ARGS+=(
     --hwdec=auto-safe
     --hwdec-codecs=all
   )
 
-  # ---------- Video output ----------
-  if [ -e /dev/dri/card0 ] || [ -e /dev/dri/card1 ]; then
-    MPV_ARGS+=(
-      --vo=drm
-      --gpu-context=drm
-    )
-    if [ "$DISPLAY_WIDTH" -ge 3840 ] 2>/dev/null; then
-      MPV_ARGS+=(--drm-mode="${DISPLAY_WIDTH}x${DISPLAY_HEIGHT}@${DISPLAY_REFRESH}")
-      echo "[player] DRM mode: ${DISPLAY_WIDTH}x${DISPLAY_HEIGHT}@${DISPLAY_REFRESH}"
-    fi
-  else
+  # Video output: DRM (direct) or X11 (shared with Chromium)
+  if [ "$use_x11" = "true" ]; then
+    # X11 mode — shared display with Chromium
     MPV_ARGS+=(--vo=gpu)
+    echo "[player] mpv output: X11 (shared display)"
+  else
+    # DRM mode — media-only, most efficient
+    if [ -e /dev/dri/card0 ] || [ -e /dev/dri/card1 ]; then
+      MPV_ARGS+=(--vo=drm --gpu-context=drm)
+      if [ "$DISPLAY_WIDTH" -ge 3840 ] 2>/dev/null; then
+        MPV_ARGS+=(--drm-mode="${DISPLAY_WIDTH}x${DISPLAY_HEIGHT}@${DISPLAY_REFRESH}")
+      fi
+    else
+      MPV_ARGS+=(--vo=gpu)
+    fi
+    echo "[player] mpv output: DRM (direct)"
   fi
 
-  # ---------- Portrait mode (rotated TV) ----------
+  # Portrait mode
   if [ "$DISPLAY_ORIENTATION" = "portrait" ]; then
     MPV_ARGS+=(--video-rotate=90)
     echo "[player] Portrait mode: rotating content 90°"
   fi
 
-  # ---------- Scaling for best quality ----------
   MPV_ARGS+=(
-    --scale=bilinear
-    --dscale=bilinear
-    --video-aspect-override=no
-    --keepaspect=yes
+    --scale=bilinear --dscale=bilinear
+    --video-aspect-override=no --keepaspect=yes
     --background-color="#000000"
-  )
-
-  # ---------- 4K / HDR settings ----------
-  if [ "$DISPLAY_4K" = "true" ] && [ "$DISPLAY_WIDTH" -ge 3840 ] 2>/dev/null; then
-    MPV_ARGS+=(--video-output-levels=full)
-    echo "[player] 4K output active"
-  fi
-
-  if [ "$DISPLAY_HDR" = "true" ]; then
-    MPV_ARGS+=(
-      --target-colorspace-hint=yes
-      --hdr-compute-peak=yes
-    )
-    echo "[player] HDR passthrough enabled"
-  fi
-
-  # ---------- All-day reliability ----------
-  MPV_ARGS+=(
-    --cache=yes
-    --demuxer-max-bytes=50MiB
-    --demuxer-max-back-bytes=25MiB
+    --cache=yes --demuxer-max-bytes=50MiB --demuxer-max-back-bytes=25MiB
     --reset-on-next-file=all
   )
 
-  # ---------- Audio ----------
+  # 4K/HDR
+  if [ "$DISPLAY_4K" = "true" ] && [ "$DISPLAY_WIDTH" -ge 3840 ] 2>/dev/null; then
+    MPV_ARGS+=(--video-output-levels=full)
+  fi
+  if [ "$DISPLAY_HDR" = "true" ]; then
+    MPV_ARGS+=(--target-colorspace-hint=yes --hdr-compute-peak=yes)
+  fi
+
+  # Audio
   local audio_enabled
   audio_enabled=$(echo "$sync" | jq -r '.settings.audio_enabled // false')
   if [ "$audio_enabled" = "false" ]; then
     MPV_ARGS+=(--no-audio)
   else
-    MPV_ARGS+=(
-      --ao=alsa
-      --audio-display=no
-    )
+    MPV_ARGS+=(--ao=alsa --audio-display=no)
   fi
 }
 
@@ -210,9 +227,6 @@ start_chromium_kiosk() {
 
   echo "[player] Chromium kiosk: $url (${duration}s)"
 
-  # Chromium needs DISPLAY or wayland — on headless Pi with DRM, use cage or direct
-  # For DRM-only Pi, we use cage (minimal Wayland compositor) if available,
-  # otherwise fall back to X with xinit
   local chromium_bin=""
   for bin in chromium chromium-browser google-chrome; do
     if command -v "$bin" &>/dev/null; then
@@ -223,74 +237,38 @@ start_chromium_kiosk() {
 
   if [ -z "$chromium_bin" ]; then
     echo "[player] ERROR: No Chromium browser found, skipping web item"
-    return 1
+    sleep "$duration"
+    return
   fi
 
-  local chromium_args=(
-    --kiosk
-    --no-first-run
-    --disable-infobars
-    --disable-session-crashed-bubble
-    --disable-features=TranslateUI
-    --noerrdialogs
-    --disable-pinch
-    --overscroll-history-navigation=0
-    --hide-scrollbars
-    --autoplay-policy=no-user-gesture-required
-    --disable-dev-shm-usage
-    --disable-gpu-sandbox
-    --user-data-dir=/tmp/picast-chromium
-    --window-size="${DISPLAY_WIDTH},${DISPLAY_HEIGHT}"
-    --app="$url"
-  )
-
-  # On headless Pi, we need an X server for Chromium
-  # Start Xorg on a spare VT if not already running
+  # Xorg should already be running (started in hybrid mode init)
   if [ -z "${DISPLAY:-}" ]; then
-    if command -v Xorg &>/dev/null; then
-      echo "[player] Starting Xorg for web content..."
-      # Check DRM is free before starting Xorg
-      if fuser /dev/dri/card0 &>/dev/null 2>&1; then
-        echo "[player] WARNING: DRM still busy, waiting..."
-        sleep 3
-      fi
-      Xorg :0 vt7 -keeptty -noreset 2>/tmp/picast-xorg.log &
-      XORG_PID=$!
-      echo "$XORG_PID" > "$SCRIPT_DIR/.xorg.pid"
-      sleep 4
-      if kill -0 "$XORG_PID" 2>/dev/null; then
-        export DISPLAY=:0
-        echo "[player] Xorg started on :0 (PID: $XORG_PID)"
-      else
-        echo "[player] ERROR: Xorg failed to start"
-        cat /tmp/picast-xorg.log 2>/dev/null | grep "EE" | tail -3
-        rm -f "$SCRIPT_DIR/.xorg.pid"
-        return 1
-      fi
-    else
-      echo "[player] ERROR: No Xorg found. Install: sudo apt-get install xserver-xorg-core"
-      return 1
-    fi
+    echo "[player] ERROR: No DISPLAY set, cannot start Chromium"
+    sleep "$duration"
+    return
   fi
 
-  # Hide cursor
-  if command -v unclutter &>/dev/null; then
-    unclutter -idle 0 -root &>/dev/null &
-  fi
-
-  # Launch Chromium in kiosk mode
-  DISPLAY="${DISPLAY:-:0}" "$chromium_bin" "${chromium_args[@]}" &>/dev/null &
+  DISPLAY=:0 "$chromium_bin" \
+    --kiosk --no-first-run --disable-infobars \
+    --disable-session-crashed-bubble --disable-features=TranslateUI \
+    --noerrdialogs --disable-pinch --overscroll-history-navigation=0 \
+    --hide-scrollbars --autoplay-policy=no-user-gesture-required \
+    --disable-dev-shm-usage --disable-gpu-sandbox --no-sandbox \
+    --user-data-dir=/tmp/picast-chromium \
+    --window-size="${DISPLAY_WIDTH},${DISPLAY_HEIGHT}" \
+    --app="$url" &>/dev/null &
   echo "$!" > "$CHROMIUM_PID_FILE"
+  echo "[player] Chromium started (PID: $(cat "$CHROMIUM_PID_FILE"))"
   sleep 2
 
-  # Wait for specified duration
+  # Wait for duration
   sleep "$duration"
 
-  # Stop chromium after duration
+  # Stop chromium (Xorg stays running)
   stop_chromium
 }
 
-# ---------- play mpv segment ----------
+# ---------- play mpv segment (X11 mode) ----------
 
 play_mpv_segment() {
   local playlist_file="$1"
@@ -304,36 +282,19 @@ play_mpv_segment() {
   count=$(wc -l < "$playlist_file" | tr -d ' ')
   echo "[player] mpv segment: $count files, ${total_duration}s"
 
-  # For single-pass (not looping), use --loop-playlist=no and let mpv exit naturally
-  # For timed playback, we kill after total_duration
-  "${PLAYER_BIN:-mpv}" "${MPV_ARGS[@]}" --playlist="$playlist_file" --loop-playlist=inf &
+  DISPLAY=:0 "${PLAYER_BIN:-mpv}" "${MPV_ARGS[@]}" --playlist="$playlist_file" --loop-playlist=inf &
   local pid=$!
   echo "$pid" > "$MPV_PID_FILE"
 
-  # Wait for duration, then stop
   sleep "$total_duration"
-
   stop_mpv
-  # Wait for DRM to be fully released (mpv holds it briefly after kill)
-  local drm_wait=0
-  while [ "$drm_wait" -lt 10 ]; do
-    if ! fuser /dev/dri/card0 &>/dev/null 2>&1; then
-      break
-    fi
-    sleep 0.5
-    drm_wait=$((drm_wait + 1))
-  done
-  echo "[player] DRM released after ${drm_wait} checks"
+  sleep 0.5
 }
 
-# ---------- parse segments from sync data ----------
-# Groups consecutive items of the same type into segments
-# Output: JSON array of segments [{type, items: [{...}], total_duration}]
+# ---------- parse segments ----------
 
 parse_segments() {
   local sync="$1"
-
-  # Use jq to group consecutive items by type
   echo "$sync" | jq -c '
     [.items // [] | to_entries |
       reduce .[] as $e (
@@ -352,24 +313,20 @@ parse_segments() {
   '
 }
 
-# ---------- orchestrator loop ----------
+# ---------- orchestrator ----------
 
 run_orchestrator() {
   local sync="$1"
 
-  # Parse segments
   local segments
   segments=$(parse_segments "$sync")
-
   local segment_count
   segment_count=$(echo "$segments" | jq 'length')
 
   if [ "$segment_count" = "0" ] || [ "$segment_count" = "null" ]; then
-    echo "[player] No items to play"
-    # Show standby
+    echo "[player] No items to play, showing standby"
     local standby="$SCRIPT_DIR/assets/standby.jpg"
     if [ -f "$standby" ]; then
-      echo "[player] Showing standby screen"
       echo "$standby" > "$PLAYLIST_FILE"
       "${PLAYER_BIN:-mpv}" "${MPV_ARGS[@]}" --playlist="$PLAYLIST_FILE" --loop-playlist=inf &
       echo "$!" > "$MPV_PID_FILE"
@@ -379,14 +336,12 @@ run_orchestrator() {
 
   local has_web
   has_web=$(echo "$segments" | jq '[.[] | select(.type == "web")] | length > 0')
-  local has_media
-  has_media=$(echo "$segments" | jq '[.[] | select(.type == "media")] | length > 0')
 
-  echo "[player] Playlist: $segment_count segment(s), web=$has_web, media=$has_media"
+  echo "[player] Playlist: $segment_count segment(s), has_web=$has_web"
 
-  # Simple case: only media items — use mpv loop (original behavior, most efficient)
+  # ---- MEDIA-ONLY: use mpv DRM loop (most efficient, no Xorg) ----
   if [ "$has_web" = "false" ]; then
-    echo "[player] Media-only playlist, using mpv loop"
+    echo "[player] Media-only playlist, using mpv DRM loop"
     generate_media_playlist "$sync"
     if [ -s "$PLAYLIST_FILE" ]; then
       "${PLAYER_BIN:-mpv}" "${MPV_ARGS[@]}" --playlist="$PLAYLIST_FILE" --loop-playlist=inf &
@@ -396,8 +351,19 @@ run_orchestrator() {
     return
   fi
 
-  # Hybrid case: mix of media + web — orchestrate segments in a loop
-  echo "[player] Hybrid playlist, starting orchestrator loop"
+  # ---- HYBRID: start Xorg ONCE, mpv + Chromium share X11 display ----
+  echo "[player] Hybrid playlist — starting Xorg for shared display"
+  if ! ensure_xorg; then
+    echo "[player] FATAL: Cannot start Xorg, falling back to media-only"
+    generate_media_playlist "$sync"
+    if [ -s "$PLAYLIST_FILE" ]; then
+      "${PLAYER_BIN:-mpv}" "${MPV_ARGS[@]}" --playlist="$PLAYLIST_FILE" --loop-playlist=inf &
+      echo "$!" > "$MPV_PID_FILE"
+    fi
+    return
+  fi
+
+  echo "[player] Hybrid orchestrator starting (Xorg on :0)"
 
   (
     while true; do
@@ -411,7 +377,6 @@ run_orchestrator() {
         seg_duration=$(echo "$segment" | jq -r '.total_duration')
 
         if [ "$seg_type" = "media" ]; then
-          # Build a temporary playlist for this media segment
           local seg_playlist="/tmp/picast-segment-${i}.txt"
           > "$seg_playlist"
 
@@ -424,11 +389,7 @@ run_orchestrator() {
               fsize=$(stat -c%s "$local_path" 2>/dev/null || echo 0)
               if [ "$fsize" -ge 1024 ]; then
                 echo "$local_path" >> "$seg_playlist"
-              else
-                echo "[player] WARN: Skipping corrupt file: $filename ($fsize bytes)"
               fi
-            else
-              echo "[player] WARN: Missing file: $filename"
             fi
           done
 
@@ -436,13 +397,10 @@ run_orchestrator() {
           rm -f "$seg_playlist"
 
         elif [ "$seg_type" = "web" ]; then
-          # Play each web item sequentially
           echo "$segment" | jq -c '.items[]' | while read -r web_item; do
-            local web_url
+            local web_url web_duration
             web_url=$(echo "$web_item" | jq -r '.web_url // empty')
-            local web_duration
             web_duration=$(echo "$web_item" | jq -r '.duration_sec // 30')
-
             if [ -n "$web_url" ]; then
               start_chromium_kiosk "$web_url" "$web_duration"
             fi
@@ -460,35 +418,23 @@ run_orchestrator() {
   echo "[player] Orchestrator started (PID: $(cat "$ORCHESTRATOR_PID_FILE"))"
 }
 
-# ---------- generate media-only playlist (legacy path) ----------
+# ---------- generate media-only playlist ----------
 
 generate_media_playlist() {
   local sync="$1"
   > "$PLAYLIST_FILE"
-
-  local item_count
-  item_count=$(echo "$sync" | jq -r '.items | length')
-  if [ "$item_count" = "0" ] || [ "$item_count" = "null" ]; then
-    echo "[player] No playlist items"
-    return
-  fi
 
   echo "$sync" | jq -r '.items[] | select(.item_type == "media") | .url' | \
   while read -r url; do
     local filename
     filename=$(basename "$url")
     local local_path="$MEDIA_DIR/$filename"
-
     if [ -f "$local_path" ]; then
       local fsize
       fsize=$(stat -c%s "$local_path" 2>/dev/null || echo 0)
-      if [ "$fsize" -lt 1024 ]; then
-        echo "[player] WARN: Skipping corrupt/empty file: $filename ($fsize bytes)"
-      else
+      if [ "$fsize" -ge 1024 ]; then
         echo "$local_path" >> "$PLAYLIST_FILE"
       fi
-    else
-      echo "[player] WARN: Missing media file: $filename"
     fi
   done
 
@@ -502,22 +448,19 @@ generate_media_playlist() {
 start_player() {
   local sync="$1"
 
-  # Detect display capabilities
   detect_display
 
-  # Build mpv args (used by both paths)
-  build_mpv_args "$sync"
+  # Check if hybrid — if so, build X11 mpv args; otherwise DRM
+  local has_web
+  has_web=$(echo "$sync" | jq '[(.items // [])[] | select(.item_type == "web")] | length > 0')
+  build_mpv_args "$sync" "$has_web"
 
-  # Create log directory
   mkdir -p "$(dirname "$MPV_LOG")"
-
-  # Rotate log if too large (>10MB)
   if [ -f "$MPV_LOG" ] && [ "$(stat -c%s "$MPV_LOG" 2>/dev/null || echo 0)" -gt 10485760 ]; then
     mv "$MPV_LOG" "$MPV_LOG.old"
     echo "[player] Log rotated (>10MB)"
   fi
 
-  # Run the orchestrator (handles both media-only and hybrid)
   run_orchestrator "$sync"
 }
 
@@ -540,15 +483,15 @@ case "${ACTION}" in
     if [ -f "$ORCHESTRATOR_PID_FILE" ] && kill -0 "$(cat "$ORCHESTRATOR_PID_FILE")" 2>/dev/null; then
       echo "[player] Orchestrator running (PID: $(cat "$ORCHESTRATOR_PID_FILE"))"
     fi
+    if [ -f "$XORG_PID_FILE" ] && kill -0 "$(cat "$XORG_PID_FILE")" 2>/dev/null; then
+      echo "[player] Xorg running (PID: $(cat "$XORG_PID_FILE"))"
+    fi
     if [ -f "$MPV_PID_FILE" ] && kill -0 "$(cat "$MPV_PID_FILE")" 2>/dev/null; then
       echo "[player] mpv running (PID: $(cat "$MPV_PID_FILE"))"
       if [ -f "$SCRIPT_DIR/.display-info.json" ]; then
         local display_info
         display_info=$(cat "$SCRIPT_DIR/.display-info.json")
         echo "[player] Display: $(echo "$display_info" | jq -r '.current_resolution') @ $(echo "$display_info" | jq -r '.refresh_rate')Hz"
-        echo "[player] TV: $(echo "$display_info" | jq -r '.manufacturer') $(echo "$display_info" | jq -r '.model')"
-        echo "[player] 4K: $(echo "$display_info" | jq -r 'if .is_4k_active then "active" elif .is_4k_capable then "capable" else "no" end')"
-        echo "[player] HDR: $(echo "$display_info" | jq -r 'if .hdr_capable then "yes" else "no" end')"
       fi
     elif [ -f "$CHROMIUM_PID_FILE" ] && kill -0 "$(cat "$CHROMIUM_PID_FILE")" 2>/dev/null; then
       echo "[player] Chromium kiosk running (PID: $(cat "$CHROMIUM_PID_FILE"))"
