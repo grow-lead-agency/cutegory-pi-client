@@ -16,7 +16,7 @@ EnvironmentFile=/opt/picast/config.env
 # Hardening
 NoNewPrivileges=true
 ProtectSystem=strict
-ReadWritePaths=/opt/picast/media /opt/picast/logs
+ReadWritePaths=/opt/picast
 ProtectHome=true
 
 [Install]

@@ -1,0 +1,8 @@
+[Unit]
+Description=Cutegory PiCast Self-Update
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/opt/picast/self-update.sh

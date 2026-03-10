@@ -78,10 +78,16 @@ generate_playlist() {
 start_mpv() {
   local sync="$1"
 
-  # Check if playlist file has content
+  # Check if playlist file has content — fallback to standby screen
   if [ ! -s "$PLAYLIST_FILE" ]; then
-    echo "[player] Empty playlist, not starting mpv"
-    return
+    local standby="$SCRIPT_DIR/assets/standby.jpg"
+    if [ -f "$standby" ]; then
+      echo "[player] Empty playlist, showing standby screen"
+      echo "$standby" > "$PLAYLIST_FILE"
+    else
+      echo "[player] Empty playlist, no standby image, not starting mpv"
+      return
+    fi
   fi
 
   # Get image duration from first image item (or default 10s)

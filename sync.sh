@@ -33,7 +33,7 @@ ITEMS=$(echo "$SYNC_DATA" | jq -r '.items[] | select(.item_type == "media") | .u
 mkdir -p "$MEDIA_DIR"
 
 # Track which files are needed
-declare -A needed_files
+declare -A needed_files=()
 
 for entry in $ITEMS; do
   url=$(echo "$entry" | cut -d'|' -f1)

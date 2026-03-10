@@ -28,7 +28,7 @@ fi
 echo ""
 echo "[1/7] Installing dependencies..."
 apt-get update -qq
-apt-get install -y -qq mpv jq curl cec-utils
+apt-get install -y -qq mpv jq curl cec-utils git
 
 # [2/7] Create picast user
 echo "[2/7] Creating picast user..."
@@ -45,33 +45,88 @@ fi
 echo "[3/7] Creating directories..."
 mkdir -p "$INSTALL_DIR"/{media,logs}
 
-# [4/7] Copy client files
-echo "[4/7] Copying client files..."
+# [4/8] Copy client files
+echo "[4/8] Copying client files..."
 cp "$SCRIPT_DIR/picast-client.sh" "$INSTALL_DIR/"
 cp "$SCRIPT_DIR/sync.sh" "$INSTALL_DIR/"
 cp "$SCRIPT_DIR/player.sh" "$INSTALL_DIR/"
 cp "$SCRIPT_DIR/cec-control.sh" "$INSTALL_DIR/"
+cp "$SCRIPT_DIR/picast-ctl.sh" "$INSTALL_DIR/"
 
 chmod +x "$INSTALL_DIR"/*.sh
 
-# Copy config if not exists (don't overwrite existing config)
+# Symlink picast-ctl to PATH for easy access
+ln -sf "$INSTALL_DIR/picast-ctl.sh" /usr/local/bin/picast-ctl
+
+# Copy config — prefer real config.env over template, never overwrite existing
 if [ ! -f "$INSTALL_DIR/config.env" ]; then
-  cp "$SCRIPT_DIR/config.env.example" "$INSTALL_DIR/config.env"
-  echo "  Created config.env from template — EDIT THIS FILE!"
+  if [ -f "$SCRIPT_DIR/config.env" ]; then
+    cp "$SCRIPT_DIR/config.env" "$INSTALL_DIR/config.env"
+    echo "  Copied config.env"
+  else
+    cp "$SCRIPT_DIR/config.env.example" "$INSTALL_DIR/config.env"
+    echo "  Created config.env from template — EDIT THIS FILE!"
+  fi
 else
   echo "  config.env already exists, skipping"
+fi
+
+# Copy standby image if exists
+if [ -f "$SCRIPT_DIR/assets/standby.jpg" ]; then
+  mkdir -p "$INSTALL_DIR/assets"
+  cp "$SCRIPT_DIR/assets/standby.jpg" "$INSTALL_DIR/assets/"
+  echo "  Copied standby screen"
 fi
 
 # Set ownership
 chown -R picast:picast "$INSTALL_DIR"
 
-# [5/7] Install systemd service
-echo "[5/7] Installing systemd service..."
+# Copy self-update script
+if [ -f "$SCRIPT_DIR/self-update.sh" ]; then
+  cp "$SCRIPT_DIR/self-update.sh" "$INSTALL_DIR/"
+  chmod +x "$INSTALL_DIR/self-update.sh"
+fi
+
+# [5/8] Install systemd services
+echo "[5/8] Installing systemd services..."
 cp "$SCRIPT_DIR/systemd/picast.service" /etc/systemd/system/
+cp "$SCRIPT_DIR/systemd/picast-update.service" /etc/systemd/system/ 2>/dev/null || true
+cp "$SCRIPT_DIR/systemd/picast-update.timer" /etc/systemd/system/ 2>/dev/null || true
 systemctl daemon-reload
 
-# [6/7] Configure boot for signage
-echo "[6/7] Configuring boot..."
+# Enable auto-update timer
+systemctl enable picast-update.timer 2>/dev/null || true
+systemctl start picast-update.timer 2>/dev/null || true
+echo "  Auto-update: daily at 04:00 + on boot"
+
+# [6/8] Security hardening
+echo "[6/8] Security hardening..."
+
+# Install and configure UFW firewall
+if ! command -v ufw &>/dev/null; then
+  apt-get install -y -qq ufw
+fi
+ufw default deny incoming >/dev/null 2>&1
+ufw default allow outgoing >/dev/null 2>&1
+ufw allow ssh >/dev/null 2>&1
+ufw --force enable >/dev/null 2>&1
+echo "  Firewall: SSH only inbound"
+
+# Install fail2ban
+if ! command -v fail2ban-client &>/dev/null; then
+  apt-get install -y -qq fail2ban
+  systemctl enable fail2ban
+  systemctl start fail2ban
+fi
+echo "  fail2ban: SSH brute force protection"
+
+# Disable unused services
+systemctl disable bluetooth.service 2>/dev/null || true
+systemctl disable avahi-daemon.service 2>/dev/null || true
+echo "  Disabled: bluetooth, avahi"
+
+# [7/8] Configure boot for signage
+echo "[7/8] Configuring boot..."
 
 # Auto-login to console (no desktop)
 raspi-config nonint do_boot_behaviour B2 2>/dev/null || true
@@ -90,12 +145,21 @@ hdmi_enable_4kp60=1
 gpu_mem=256
 disable_overscan=1
 hdmi_force_hotplug=1
+disable_splash=1
 HDMI
   echo "  Added HDMI config to $BOOT_CONFIG"
 fi
 
-# [7/7] Enable service (don't start yet — config needed)
-echo "[7/7] Enabling service..."
+# Hide boot text — show blank screen instead of console messages
+CMDLINE="/boot/firmware/cmdline.txt"
+[ ! -f "$CMDLINE" ] && CMDLINE="/boot/cmdline.txt"
+if ! grep -q "quiet" "$CMDLINE" 2>/dev/null; then
+  sed -i 's/$/ quiet splash loglevel=0 logo.nologo vt.global_cursor_default=0/' "$CMDLINE"
+  echo "  Hidden boot text (quiet splash)"
+fi
+
+# [8/8] Enable service (don't start yet — config needed)
+echo "[8/8] Enabling service..."
 systemctl enable picast.service
 
 echo ""

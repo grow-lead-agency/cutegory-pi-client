@@ -1,0 +1,10 @@
+[Unit]
+Description=Daily PiCast update check
+
+[Timer]
+OnBootSec=60
+OnCalendar=*-*-* 04:00:00
+Persistent=true
+
+[Install]
+WantedBy=timers.target
