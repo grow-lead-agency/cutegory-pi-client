@@ -5,6 +5,7 @@ media/
 .last-sync.json
 .last-hash
 .mpv.pid
+.mpv-socket
 .chromium.pid
 .xorg.pid
 .orchestrator.pid

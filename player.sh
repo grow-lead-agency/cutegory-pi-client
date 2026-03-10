@@ -123,7 +123,7 @@ stop_all() {
     rm -f "$pidfile"
   done
   sleep 1
-  rm -f /tmp/.X0-lock /tmp/.X11-unix/X0 /tmp/mpv-socket 2>/dev/null || true
+  rm -f /tmp/.X0-lock /tmp/.X11-unix/X0 /opt/picast/.mpv-socket 2>/dev/null || true
 }
 
 # ---------- Xorg management ----------
@@ -199,7 +199,7 @@ build_mpv_args() {
     --image-display-duration="$image_duration"
     --hwdec=auto-safe
     --hwdec-codecs=all
-    --input-ipc-server=/tmp/mpv-socket
+    --input-ipc-server=/opt/picast/.mpv-socket
   )
 
   # Video output: DRM (direct) or X11 (shared with Chromium)

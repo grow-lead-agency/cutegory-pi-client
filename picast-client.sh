@@ -111,7 +111,7 @@ run_cec_test() {
 run_screenshot() {
   local cmd_id="$1"
   local screenshot_path="/tmp/picast-screenshot.jpg"
-  local mpv_socket="/tmp/mpv-socket"
+  local mpv_socket="/opt/picast/.mpv-socket"
 
   if [ -f "$SCRIPT_DIR/.mpv.pid" ] && kill -0 "$(cat "$SCRIPT_DIR/.mpv.pid")" 2>/dev/null; then
     # Method 1: mpv IPC socket (if available)
