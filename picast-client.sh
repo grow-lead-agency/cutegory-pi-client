@@ -111,15 +111,21 @@ run_cec_test() {
 run_screenshot() {
   local cmd_id="$1"
   local screenshot_path="/tmp/picast-screenshot.jpg"
+  local mpv_socket="/tmp/mpv-socket"
 
   if [ -f "$SCRIPT_DIR/.mpv.pid" ] && kill -0 "$(cat "$SCRIPT_DIR/.mpv.pid")" 2>/dev/null; then
-    # Use framebuffer capture (DRM doesn't support mpv --screenshot)
-    if command -v fbgrab &>/dev/null; then
-      fbgrab -c 90 "$screenshot_path" 2>/dev/null || true
-    elif [ -e /dev/fb0 ]; then
-      local fb_size
-      fb_size=$(tr ',' 'x' < /sys/class/graphics/fb0/virtual_size 2>/dev/null || echo "1920x1080")
-      ffmpeg -f rawvideo -pix_fmt bgra -s "$fb_size" -i /dev/fb0 -frames:v 1 -q:v 5 "$screenshot_path" -y 2>/dev/null || true
+    # Method 1: mpv IPC socket (works in DRM + X11, zero overhead)
+    if [ -S "$mpv_socket" ]; then
+      echo '{"command": ["screenshot-to-file", "'"$screenshot_path"'", "video"]}' | \
+        socat - UNIX-CONNECT:"$mpv_socket" 2>/dev/null || true
+      sleep 1
+    fi
+
+    # Method 2: Xorg screenshot fallback (hybrid mode only)
+    if [ ! -f "$screenshot_path" ] || [ ! -s "$screenshot_path" ]; then
+      if [ -n "${DISPLAY:-}" ] && command -v import &>/dev/null; then
+        DISPLAY=:0 import -window root "$screenshot_path" 2>/dev/null || true
+      fi
     fi
 
     if [ -f "$screenshot_path" ] && [ -s "$screenshot_path" ]; then

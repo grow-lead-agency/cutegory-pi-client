@@ -199,6 +199,7 @@ build_mpv_args() {
     --image-display-duration="$image_duration"
     --hwdec=auto-safe
     --hwdec-codecs=all
+    --input-ipc-server=/tmp/mpv-socket
   )
 
   # Video output: DRM (direct) or X11 (shared with Chromium)

@@ -35,11 +35,11 @@ apt-get update -qq
 
 # Core
 apt-get install -y -qq \
-  mpv jq curl \
+  mpv jq curl socat \
   cec-utils \
   ddcutil \
   git \
-  edid-decode fbgrab \
+  edid-decode \
   ffmpeg
 
 # Chromium + Xorg (for hybrid web content playback)
