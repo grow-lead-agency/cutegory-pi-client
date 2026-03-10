@@ -110,13 +110,13 @@ run_cec_test() {
 
 run_screenshot() {
   local cmd_id="$1"
-  local screenshot_path="/tmp/picast-screenshot.jpg"
+  local screenshot_path="/opt/picast/.screenshot.jpg"
   local mpv_socket="/opt/picast/.mpv-socket"
 
   if [ -f "$SCRIPT_DIR/.mpv.pid" ] && kill -0 "$(cat "$SCRIPT_DIR/.mpv.pid")" 2>/dev/null; then
     # Method 1: mpv IPC socket (if available)
     if [ -S "$mpv_socket" ]; then
-      echo '{"command": ["screenshot-to-file", "'"$screenshot_path"'", "video"]}' | \
+      echo '{"command": ["screenshot-to-file", "'"$screenshot_path"'", "subtitles"]}' | \
         socat - UNIX-CONNECT:"$mpv_socket" 2>/dev/null || true
       sleep 1
     fi
