@@ -112,8 +112,16 @@ stop_all() {
   stop_chromium
   stop_mpv
   stop_xorg
-  # Belt-and-suspenders: kill any orphan processes holding DRM
-  killall -9 mpv chromium Xorg 2>/dev/null || true
+  # Belt-and-suspenders: kill orphan PiCast processes by PID files
+  for pidfile in "$SCRIPT_DIR"/.*.pid; do
+    [ -f "$pidfile" ] || continue
+    local pid
+    pid=$(cat "$pidfile" 2>/dev/null) || continue
+    if kill -0 "$pid" 2>/dev/null; then
+      kill -9 "$pid" 2>/dev/null || true
+    fi
+    rm -f "$pidfile"
+  done
   sleep 1
   rm -f /tmp/.X0-lock /tmp/.X11-unix/X0 2>/dev/null || true
 }
@@ -431,7 +439,12 @@ run_orchestrator() {
 
   echo "[player] Hybrid orchestrator starting (Xorg on :0)"
 
+  local _orch_log="${LOG_DIR:-/opt/picast/logs}/orchestrator.log"
+
   (
+    _error_count=0
+    _max_errors=5
+
     while true; do
       _i=0
       while [ "$_i" -lt "$segment_count" ]; do
@@ -454,7 +467,12 @@ run_orchestrator() {
             fi
           done
 
-          play_mpv_segment "$_seg_playlist" "$_seg_duration"
+          if ! play_mpv_segment "$_seg_playlist" "$_seg_duration"; then
+            echo "[orchestrator] $(date +%H:%M:%S) mpv segment failed" >> "$_orch_log"
+            _error_count=$((_error_count + 1))
+          else
+            _error_count=0
+          fi
           rm -f "$_seg_playlist"
 
         elif [ "$_seg_type" = "web" ]; then
@@ -462,9 +480,21 @@ run_orchestrator() {
             _web_url=$(echo "$_web_item" | jq -r '.web_url // empty')
             _web_duration=$(echo "$_web_item" | jq -r '.duration_sec // 30')
             if [ -n "$_web_url" ]; then
-              start_chromium_kiosk "$_web_url" "$_web_duration"
+              if ! start_chromium_kiosk "$_web_url" "$_web_duration"; then
+                echo "[orchestrator] $(date +%H:%M:%S) Chromium failed: $_web_url" >> "$_orch_log"
+                _error_count=$((_error_count + 1))
+              else
+                _error_count=0
+              fi
             fi
           done
+        fi
+
+        # Circuit breaker: too many consecutive errors → bail out
+        if [ "$_error_count" -ge "$_max_errors" ]; then
+          echo "[orchestrator] $(date +%H:%M:%S) CIRCUIT BREAKER: $_error_count consecutive errors, exiting" >> "$_orch_log"
+          echo "[player] Orchestrator hit circuit breaker ($_max_errors errors)"
+          exit 1
         fi
 
         _i=$((_i + 1))

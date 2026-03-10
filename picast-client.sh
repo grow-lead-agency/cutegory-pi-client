@@ -6,6 +6,8 @@
 
 set -euo pipefail
 
+PICAST_VERSION="1.1.0"
+
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 CONFIG_FILE="${PICAST_CONFIG:-$SCRIPT_DIR/config.env}"
 SYNC_CACHE="$SCRIPT_DIR/.last-sync.json"
@@ -28,12 +30,15 @@ for var in DEVICE_ID DEVICE_KEY SERVER_URL; do
   fi
 done
 
-echo "[picast] Starting Cutegory PiCast client"
+echo "[picast] Starting Cutegory PiCast client v${PICAST_VERSION}"
 echo "[picast] Server: $SERVER_URL"
 echo "[picast] Device: $DEVICE_ID"
 echo "[picast] Poll interval: ${POLL_INTERVAL:-30}s"
 
 POLL_INTERVAL="${POLL_INTERVAL:-30}"
+CURRENT_POLL_INTERVAL="$POLL_INTERVAL"
+CONSECUTIVE_FAILURES=0
+MAX_BACKOFF=300  # 5 min max backoff
 LAST_CONFIG_HASH=""
 PENDING_COMMAND_RESULTS="[]"
 
@@ -85,7 +90,7 @@ get_player_status() {
 run_cec_test() {
   local cmd_id="$1"
   if ! command -v cec-client &>/dev/null; then
-    echo "{\"id\":\"$cmd_id\",\"status\":\"error\",\"result\":{\"error\":\"cec-client not installed\"}}"
+    jq -n --arg id "$cmd_id" '{id: $id, status: "error", result: {error: "cec-client not installed"}}'
     return
   fi
 
@@ -95,9 +100,11 @@ run_cec_test() {
   power=$(echo "$output" | grep -oP 'power status: \K\w+' || echo "")
 
   if [ -n "$power" ]; then
-    echo "{\"id\":\"$cmd_id\",\"status\":\"done\",\"result\":{\"cec_supported\":true,\"tv_power\":\"$power\"}}"
+    jq -n --arg id "$cmd_id" --arg power "$power" \
+      '{id: $id, status: "done", result: {cec_supported: true, tv_power: $power}}'
   else
-    echo "{\"id\":\"$cmd_id\",\"status\":\"done\",\"result\":{\"cec_supported\":false,\"tv_power\":\"unknown\"}}"
+    jq -n --arg id "$cmd_id" \
+      '{id: $id, status: "done", result: {cec_supported: false, tv_power: "unknown"}}'
   fi
 }
 
@@ -110,43 +117,57 @@ run_screenshot() {
     if command -v fbgrab &>/dev/null; then
       fbgrab -c 90 "$screenshot_path" 2>/dev/null || true
     elif [ -e /dev/fb0 ]; then
-      cat /dev/fb0 | ffmpeg -f rawvideo -pix_fmt bgra -s "$(cat /sys/class/graphics/fb0/virtual_size | tr ',' 'x')" -i - -frames:v 1 -q:v 5 "$screenshot_path" -y 2>/dev/null || true
+      local fb_size
+      fb_size=$(tr ',' 'x' < /sys/class/graphics/fb0/virtual_size 2>/dev/null || echo "1920x1080")
+      ffmpeg -f rawvideo -pix_fmt bgra -s "$fb_size" -i /dev/fb0 -frames:v 1 -q:v 5 "$screenshot_path" -y 2>/dev/null || true
     fi
 
     if [ -f "$screenshot_path" ] && [ -s "$screenshot_path" ]; then
-      # Upload to R2
+      # Upload screenshot via dedicated endpoint with multipart form
       local ts
       ts=$(date +%Y%m%d-%H%M%S)
-      local r2_path="screenshots/${DEVICE_ID}/${ts}.jpg"
-      local upload_url="${R2_BASE_URL:-https://signage-media.cutegory.cz}/${r2_path}"
-
-      # Upload via server endpoint (Pi doesn't have R2 write credentials)
       local upload_result
-      upload_result=$(curl -sf -X POST "${SERVER_URL}/api/v1/signage/heartbeat" \
+      upload_result=$(curl -sf -X POST "${SERVER_URL}/api/v1/signage/screenshot" \
         -H "X-Device-Token: ${DEVICE_KEY}" \
-        -H "Content-Type: application/json" \
-        -d "{\"device_id\":\"${DEVICE_ID}\",\"screenshot_path\":\"${r2_path}\"}" 2>/dev/null) || true
+        -F "device_id=${DEVICE_ID}" \
+        -F "filename=${ts}.jpg" \
+        -F "file=@${screenshot_path}" 2>/dev/null) || true
 
-      echo "{\"id\":\"$cmd_id\",\"status\":\"done\",\"result\":{\"success\":true,\"path\":\"$screenshot_path\"}}"
+      local r2_path
+      r2_path=$(echo "$upload_result" | jq -r '.path // empty' 2>/dev/null)
+
+      if [ -n "$r2_path" ]; then
+        jq -n --arg id "$cmd_id" --arg path "$r2_path" \
+          '{id: $id, status: "done", result: {success: true, path: $path}}'
+      else
+        jq -n --arg id "$cmd_id" \
+          '{id: $id, status: "done", result: {success: true, path: "upload_pending"}}'
+      fi
     else
-      echo "{\"id\":\"$cmd_id\",\"status\":\"error\",\"result\":{\"error\":\"screenshot capture failed\"}}"
+      jq -n --arg id "$cmd_id" \
+        '{id: $id, status: "error", result: {error: "screenshot capture failed"}}'
     fi
     rm -f "$screenshot_path"
   else
-    echo "{\"id\":\"$cmd_id\",\"status\":\"error\",\"result\":{\"error\":\"player not running\"}}"
+    jq -n --arg id "$cmd_id" \
+      '{id: $id, status: "error", result: {error: "player not running"}}'
   fi
 }
 
 run_cec_action() {
   local cmd_id="$1"
   local action="$2"
-  if ! command -v cec-client &>/dev/null; then
-    echo "{\"id\":\"$cmd_id\",\"status\":\"error\",\"result\":{\"error\":\"cec-client not installed\"}}"
-    return
-  fi
 
-  echo "$action" | timeout 10 cec-client -s -d 1 2>/dev/null || true
-  echo "{\"id\":\"$cmd_id\",\"status\":\"done\",\"result\":{\"success\":true}}"
+  # Use cec-control.sh which handles CEC + DDC/CI fallback
+  local cec_action=""
+  case "$action" in
+    "on 0")  cec_action="on" ;;
+    "standby 0") cec_action="off" ;;
+    *) cec_action="status" ;;
+  esac
+
+  "$SCRIPT_DIR/cec-control.sh" "$cec_action" 2>/dev/null || true
+  jq -n --arg id "$cmd_id" '{id: $id, status: "done", result: {success: true}}'
 }
 
 process_commands() {
@@ -185,7 +206,7 @@ process_commands() {
         ;;
       reboot)
         # Send result BEFORE rebooting
-        result="{\"id\":\"$cmd_id\",\"status\":\"done\",\"result\":{\"success\":true}}"
+        result=$(jq -n --arg id "$cmd_id" '{id: $id, status: "done", result: {success: true}}')
         PENDING_COMMAND_RESULTS=$(echo "$results" | jq --argjson r "$result" '. + [$r]')
         echo "[picast] $(date +%H:%M:%S) Reboot command — sending result and rebooting"
         send_heartbeat
@@ -219,19 +240,14 @@ send_heartbeat() {
   ip=$(get_local_ip)
   local disk
   disk=$(get_free_disk_mb)
-  local uptime
-  uptime=$(get_uptime_sec)
+  local up
+  up=$(get_uptime_sec)
 
-  # Read display info from cache
-  local display_res="unknown" display_model="unknown" display_4k="false" display_hdr="false" display_orientation="landscape" display_aspect="16:9"
+  # Read display info from cache (safe via jq)
   local display_cache="$SCRIPT_DIR/.display-info.json"
+  local display_json="{}"
   if [ -f "$display_cache" ]; then
-    display_res=$(jq -r '.current_resolution // "unknown"' "$display_cache")
-    display_model=$(jq -r '(.manufacturer // "") + " " + (.model // "") | gsub("^ | $"; "")' "$display_cache")
-    display_4k=$(jq -r '.is_4k_active // false' "$display_cache")
-    display_hdr=$(jq -r '.hdr_capable // false' "$display_cache")
-    display_orientation=$(jq -r '.orientation // "landscape"' "$display_cache")
-    display_aspect=$(jq -r '.aspect_ratio // "16:9"' "$display_cache")
+    display_json=$(cat "$display_cache")
   fi
 
   # CPU temperature (Pi thermal zone)
@@ -243,10 +259,40 @@ send_heartbeat() {
   # Include command results if any
   local cmd_results="${PENDING_COMMAND_RESULTS:-[]}"
 
+  # Build heartbeat payload safely via jq (no string interpolation bugs)
+  local payload
+  payload=$(jq -n \
+    --arg device_id "$DEVICE_ID" \
+    --arg ip "$ip" \
+    --argjson disk "${disk:-0}" \
+    --argjson uptime "${up:-0}" \
+    --arg player_status "$status" \
+    --arg version "$PICAST_VERSION" \
+    --argjson cpu_temp "${cpu_temp:-0}" \
+    --argjson display "$display_json" \
+    --argjson cmd_results "$cmd_results" \
+    '{
+      device_id: $device_id,
+      ip_address: $ip,
+      free_disk_mb: $disk,
+      uptime_sec: $uptime,
+      player_status: $player_status,
+      client_version: $version,
+      cpu_temp: $cpu_temp,
+      display_resolution: ($display.current_resolution // "unknown"),
+      display_model: (($display.manufacturer // "") + " " + ($display.model // "") | gsub("^ | $"; "")),
+      display_4k: ($display.is_4k_active // false),
+      display_hdr: ($display.hdr_capable // false),
+      display_orientation: ($display.orientation // "landscape"),
+      display_aspect_ratio: ($display.aspect_ratio // "16:9"),
+      command_results: $cmd_results
+    }')
+
   curl -sf -X POST "${SERVER_URL}/api/v1/signage/heartbeat" \
     -H "X-Device-Token: ${DEVICE_KEY}" \
+    -H "X-PiCast-Version: ${PICAST_VERSION}" \
     -H "Content-Type: application/json" \
-    -d "{\"device_id\":\"${DEVICE_ID}\",\"ip_address\":\"${ip}\",\"free_disk_mb\":${disk},\"uptime_sec\":${uptime},\"player_status\":\"${status}\",\"display_resolution\":\"${display_res}\",\"display_model\":\"${display_model}\",\"display_4k\":${display_4k},\"display_hdr\":${display_hdr},\"display_orientation\":\"${display_orientation}\",\"display_aspect_ratio\":\"${display_aspect}\",\"cpu_temp\":${cpu_temp},\"command_results\":${cmd_results}}" \
+    -d "$payload" \
     > /dev/null 2>&1 || echo "[picast] $(date +%H:%M:%S) Heartbeat failed (non-fatal)"
 
   # Clear command results after sending
@@ -349,6 +395,28 @@ manage_tv_power() {
   fi
 }
 
+# ---------- log rotation ----------
+
+rotate_logs() {
+  local log_dir="${LOG_DIR:-/opt/picast/logs}"
+  local max_size=10485760  # 10MB
+
+  for logfile in "$log_dir"/*.log; do
+    [ -f "$logfile" ] || continue
+    local size
+    size=$(stat -c%s "$logfile" 2>/dev/null || echo 0)
+    if [ "$size" -gt "$max_size" ]; then
+      mv "$logfile" "${logfile}.old"
+      echo "[picast] $(date +%H:%M:%S) Rotated log: $(basename "$logfile") ($(( size / 1048576 ))MB)"
+    fi
+  done
+
+  # Trim journalctl if over 50MB
+  if journalctl --disk-usage 2>/dev/null | grep -qP '\d{2,}\.?\d*M|G'; then
+    sudo journalctl --vacuum-size=50M 2>/dev/null || true
+  fi
+}
+
 # ---------- cleanup on exit ----------
 
 cleanup() {
@@ -359,16 +427,42 @@ cleanup() {
 }
 trap cleanup SIGTERM SIGINT
 
+# ---------- backoff helpers ----------
+
+reset_backoff() {
+  CONSECUTIVE_FAILURES=0
+  CURRENT_POLL_INTERVAL="$POLL_INTERVAL"
+}
+
+increase_backoff() {
+  CONSECUTIVE_FAILURES=$(( CONSECUTIVE_FAILURES + 1 ))
+  # Exponential backoff: 30, 60, 120, 240, 300 (capped)
+  CURRENT_POLL_INTERVAL=$(( POLL_INTERVAL * (2 ** (CONSECUTIVE_FAILURES > 4 ? 4 : CONSECUTIVE_FAILURES)) ))
+  if [ "$CURRENT_POLL_INTERVAL" -gt "$MAX_BACKOFF" ]; then
+    CURRENT_POLL_INTERVAL="$MAX_BACKOFF"
+  fi
+  echo "[picast] $(date +%H:%M:%S) Backoff: next poll in ${CURRENT_POLL_INTERVAL}s (failure #${CONSECUTIVE_FAILURES})"
+}
+
 # ---------- main loop ----------
 
+# Rotate logs on startup
+rotate_logs 2>/dev/null || true
+
 while true; do
-  # Fetch sync config
+  # Fetch sync config (with version header for compatibility negotiation)
   SYNC=$(curl -sf "${SERVER_URL}/api/v1/signage/sync/${DEVICE_ID}" \
-    -H "X-Device-Token: ${DEVICE_KEY}" 2>/dev/null) || {
+    -H "X-Device-Token: ${DEVICE_KEY}" \
+    -H "X-PiCast-Version: ${PICAST_VERSION}" \
+    2>/dev/null) || {
+    increase_backoff
     echo "[picast] $(date +%H:%M:%S) Server unreachable, using cached config"
-    sleep "$POLL_INTERVAL"
+    sleep "$CURRENT_POLL_INTERVAL"
     continue
   }
+
+  # Server reachable — reset backoff
+  reset_backoff
 
   # Process pending commands (high priority — do before anything else)
   process_commands "$SYNC"
@@ -383,7 +477,7 @@ while true; do
 
   # Skip media sync if TV is off
   if [ "$TV_IS_OFF" = true ]; then
-    sleep "$POLL_INTERVAL"
+    sleep "$CURRENT_POLL_INTERVAL"
     continue
   fi
 
@@ -392,7 +486,7 @@ while true; do
 
   if [ -z "$NEW_HASH" ]; then
     echo "[picast] $(date +%H:%M:%S) Invalid sync response"
-    sleep "$POLL_INTERVAL"
+    sleep "$CURRENT_POLL_INTERVAL"
     continue
   fi
 
@@ -433,5 +527,10 @@ while true; do
     send_heartbeat
   fi
 
-  sleep "$POLL_INTERVAL"
+  # Periodic log rotation (every ~30 min = 60 polls)
+  if [ $(( HEARTBEAT_COUNTER % 60 )) -eq 0 ]; then
+    rotate_logs 2>/dev/null || true
+  fi
+
+  sleep "$CURRENT_POLL_INTERVAL"
 done
