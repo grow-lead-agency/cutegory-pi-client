@@ -130,10 +130,14 @@ run_screenshot() {
       fi
     fi
 
-    # Method 3: Xorg screenshot fallback (hybrid mode only)
+    # Method 3: scrot/import Xorg screenshot fallback (hybrid mode only)
     if [ ! -f "$screenshot_path" ] || [ ! -s "$screenshot_path" ]; then
-      if [ -n "${DISPLAY:-}" ] && command -v import &>/dev/null; then
-        DISPLAY=:0 import -window root "$screenshot_path" 2>/dev/null || true
+      if [ -n "${DISPLAY:-}" ]; then
+        if command -v scrot &>/dev/null; then
+          DISPLAY=:0 scrot -q 85 "$screenshot_path" 2>/dev/null || true
+        elif command -v import &>/dev/null; then
+          DISPLAY=:0 import -window root "$screenshot_path" 2>/dev/null || true
+        fi
       fi
     fi
 
@@ -148,10 +152,14 @@ run_screenshot() {
         -F "filename=${ts}.jpg" \
         -F "file=@${screenshot_path}" 2>/dev/null) || true
 
-      local r2_path
+      local r2_path r2_url
       r2_path=$(echo "$upload_result" | jq -r '.path // empty' 2>/dev/null)
+      r2_url=$(echo "$upload_result" | jq -r '.url // empty' 2>/dev/null)
 
-      if [ -n "$r2_path" ]; then
+      if [ -n "$r2_url" ]; then
+        jq -n --arg id "$cmd_id" --arg path "$r2_path" --arg url "$r2_url" \
+          '{id: $id, status: "done", result: {success: true, path: $path, url: $url}}'
+      elif [ -n "$r2_path" ]; then
         jq -n --arg id "$cmd_id" --arg path "$r2_path" \
           '{id: $id, status: "done", result: {success: true, path: $path}}'
       else
