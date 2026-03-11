@@ -1,0 +1,11 @@
+<!DOCTYPE html>
+<html><head>
+<meta charset="utf-8">
+<style>*{margin:0;padding:0;background:#000}body{background:#000;overflow:hidden}</style>
+</head><body>
+<iframe id="f" style="position:fixed;top:0;left:0;width:100vw;height:100vh;border:none;background:#000" allowfullscreen></iframe>
+<script>
+const url = new URLSearchParams(location.search).get('url');
+if (url) document.getElementById('f').src = url;
+</script>
+</body></html>

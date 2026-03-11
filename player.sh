@@ -395,7 +395,20 @@ start_chromium_kiosk() {
   screen_w="${screen_w:-1920}"
   screen_h="${screen_h:-1080}"
 
-  # Chromium renders ON TOP of mpv (mpv stays alive underneath showing black idle)
+  # Use local black wrapper HTML that loads the URL in an iframe.
+  # This eliminates the white flash — local file loads instantly (black bg),
+  # then the iframe loads the remote content on top.
+  local wrapper_path="$SCRIPT_DIR/assets/web-wrapper.html"
+  local target_url="$url"
+  if [ -f "$wrapper_path" ]; then
+    # URL-encode the target for query param
+    local encoded_url
+    encoded_url=$(python3 -c "import urllib.parse; print(urllib.parse.quote('$url', safe=''))" 2>/dev/null || echo "$url")
+    target_url="file://${wrapper_path}?url=${encoded_url}"
+    echo "[player] Using black wrapper for: $url"
+  fi
+
+  # Chromium renders ON TOP of mpv (mpv stays alive underneath)
   DISPLAY=:0 dbus-run-session "$chromium_bin" \
     --kiosk \
     --window-size="${screen_w},${screen_h}" --window-position=0,0 \
@@ -411,7 +424,7 @@ start_chromium_kiosk() {
     --in-process-gpu --disable-gpu-compositing \
     --default-background-color=ff000000 \
     --user-data-dir="$CHROMIUM_DATA_DIR" \
-    "$url" &>/dev/null &
+    "$target_url" &>/dev/null &
   echo "$!" > "$CHROMIUM_PID_FILE"
   echo "[player] Chromium started (PID: $(cat "$CHROMIUM_PID_FILE"))"
 
