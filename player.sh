@@ -409,7 +409,7 @@ start_chromium_kiosk() {
     --disable-extensions --disable-background-networking \
     --disable-sync --disable-default-apps --disable-component-update \
     --in-process-gpu --disable-gpu-compositing \
-    --default-background-color=000000 \
+    --default-background-color=ff000000 \
     --user-data-dir="$CHROMIUM_DATA_DIR" \
     "$url" &>/dev/null &
   echo "$!" > "$CHROMIUM_PID_FILE"
