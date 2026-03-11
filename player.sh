@@ -378,12 +378,23 @@ play_mpv_segment() {
   count=$(wc -l < "$playlist_file" | tr -d ' ')
   echo "[player] mpv segment: $count files, ${total_duration}s"
 
+  # Save old mpv PID (if any) for overlap kill
+  local old_mpv_pid=""
+  if [ -f "$MPV_PID_FILE" ]; then
+    old_mpv_pid=$(cat "$MPV_PID_FILE" 2>/dev/null || true)
+  fi
+
   DISPLAY=:0 "${PLAYER_BIN:-mpv}" "${MPV_ARGS[@]}" --playlist="$playlist_file" --loop-playlist=inf &
   local pid=$!
   echo "$pid" > "$MPV_PID_FILE"
 
-  # Wait for mpv to render first frame, then kill previous Chromium
+  # Wait for mpv to render first frame, then kill ALL previous players
   sleep 0.5
+  # Kill old mpv instance (media→media overlap)
+  if [ -n "$old_mpv_pid" ] && [ "$old_mpv_pid" != "$pid" ]; then
+    kill "$old_mpv_pid" 2>/dev/null || true
+  fi
+  # Kill old Chromium (web→media overlap)
   stop_chromium 2>/dev/null
 
   sleep "$total_duration"
@@ -491,13 +502,11 @@ run_orchestrator() {
             fi
           done
 
-          # Start mpv FIRST, then kill previous Chromium (overlap = no gap)
+          # Start mpv — it will kill previous Chromium/mpv after rendering first frame
           if [ -s "$_seg_playlist" ]; then
             play_mpv_segment "$_seg_playlist" "$_seg_duration"
             _error_count=0
           fi
-          # Kill mpv after segment ends (cleanup for next segment)
-          stop_mpv
           rm -f "$_seg_playlist"
 
         elif [ "$_seg_type" = "web" ]; then
