@@ -328,7 +328,7 @@ check_working_hours() {
   fi
 
   # Convert HH:MM to minutes since midnight
-  now_minutes=$(( $(date +%H) * 60 + $(date +%M) ))
+  now_minutes=$(( 10#$(date +%H) * 60 + 10#$(date +%M) ))
   off_minutes=$(( $(echo "$tv_off" | cut -d: -f1 | sed 's/^0//') * 60 + $(echo "$tv_off" | cut -d: -f2 | sed 's/^0//') ))
   on_minutes=$(( $(echo "$tv_on" | cut -d: -f1 | sed 's/^0//') * 60 + $(echo "$tv_on" | cut -d: -f2 | sed 's/^0//') ))
 
