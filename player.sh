@@ -165,16 +165,28 @@ ensure_xorg() {
 
   if [ "$ready" = "true" ]; then
     export DISPLAY=:0
-    # Black background — prevents colored flash during mpv↔Chromium transitions
+
+    # === BLACK EVERYTHING: prevent blue/colored flash during transitions ===
+
+    # 1. Black out VT7 Linux framebuffer console (Pi OS default is blue/colored)
+    setterm --background black --foreground black --clear all > /dev/tty7 2>/dev/null || true
+    # Disable cursor blink on VT7
+    echo -e '\033[?25l' > /dev/tty7 2>/dev/null || true
+
+    # 2. Black X11 root window
     DISPLAY=:0 xsetroot -solid black 2>/dev/null || true
-    # Disable screensaver/DPMS (prevents screen blanking)
+
+    # 3. Disable screensaver/DPMS (prevents screen blanking)
     DISPLAY=:0 xset s noblank 2>/dev/null || true
     DISPLAY=:0 xset s off 2>/dev/null || true
     DISPLAY=:0 xset -dpms 2>/dev/null || true
-    # Hide cursor
+
+    # 4. Hide cursor
     if command -v unclutter &>/dev/null; then
       DISPLAY=:0 unclutter -idle 0 -root &>/dev/null &
     fi
+
+    echo "[player] Display blacked out (VT7 + X11 root)"
     return 0
   else
     echo "[player] ERROR: Xorg failed to start"
@@ -315,9 +327,13 @@ start_chromium_kiosk() {
   screen_w="${screen_w:-1920}"
   screen_h="${screen_h:-1080}"
 
+  # Ensure black root is visible while Chromium loads
+  DISPLAY=:0 xsetroot -solid black 2>/dev/null || true
+
   # dbus-run-session is CRITICAL — without it Chromium exits after ~10s
   # --kiosk = true fullscreen (no title bar, no URL bar)
   # --test-type suppresses "no-sandbox" warning banner
+  # --default-background-color=000000 prevents white/blue flash during page load
   DISPLAY=:0 dbus-run-session "$chromium_bin" \
     --kiosk \
     --window-size="${screen_w},${screen_h}" --window-position=0,0 \
@@ -331,6 +347,7 @@ start_chromium_kiosk() {
     --disable-extensions --disable-background-networking \
     --disable-sync --disable-default-apps --disable-component-update \
     --in-process-gpu --disable-gpu-compositing \
+    --default-background-color=000000 \
     --user-data-dir="$CHROMIUM_DATA_DIR" \
     "$url" &>/dev/null &
   echo "$!" > "$CHROMIUM_PID_FILE"
@@ -339,6 +356,9 @@ start_chromium_kiosk() {
 
   # Wait for duration
   sleep "$duration"
+
+  # Repaint root black BEFORE killing Chromium (prevents flash)
+  DISPLAY=:0 xsetroot -solid black 2>/dev/null || true
 
   # Stop chromium (Xorg stays running)
   stop_chromium
@@ -363,8 +383,11 @@ play_mpv_segment() {
   echo "$pid" > "$MPV_PID_FILE"
 
   sleep "$total_duration"
+
+  # Repaint root black BEFORE killing mpv (prevents flash during transition)
+  DISPLAY=:0 xsetroot -solid black 2>/dev/null || true
+
   stop_mpv
-  sleep 0.5
 }
 
 # ---------- parse segments ----------

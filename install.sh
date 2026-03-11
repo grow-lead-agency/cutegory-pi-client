@@ -243,9 +243,27 @@ fi
 CMDLINE="/boot/firmware/cmdline.txt"
 [ ! -f "$CMDLINE" ] && CMDLINE="/boot/cmdline.txt"
 if ! grep -q "quiet" "$CMDLINE" 2>/dev/null; then
-  sed -i 's/$/ quiet splash loglevel=0 logo.nologo vt.global_cursor_default=0/' "$CMDLINE"
-  echo "  Hidden boot text (quiet splash)"
+  sed -i 's/$/ quiet splash loglevel=0 logo.nologo vt.global_cursor_default=0 consoleblank=1/' "$CMDLINE"
+  echo "  Hidden boot text (quiet splash, console blank)"
 fi
+
+# Set VT7 console to black (prevents blue flash during mpv↔Chromium transitions)
+cat > /etc/systemd/system/picast-vt-black.service << 'VTBLACK'
+[Unit]
+Description=Black out VT7 console for PiCast
+After=multi-user.target
+
+[Service]
+Type=oneshot
+ExecStart=/bin/bash -c 'setterm --background black --foreground black --clear all > /dev/tty7 2>/dev/null; echo -e "\033[?25l" > /dev/tty7 2>/dev/null'
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target
+VTBLACK
+systemctl daemon-reload
+systemctl enable picast-vt-black.service 2>/dev/null || true
+echo "  VT7 black console: enabled (systemd oneshot)"
 
 # Xwrapper config (allow non-root Xorg + root rights for VT access)
 mkdir -p /etc/X11
