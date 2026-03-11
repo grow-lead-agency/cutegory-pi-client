@@ -352,16 +352,16 @@ start_chromium_kiosk() {
     "$url" &>/dev/null &
   echo "$!" > "$CHROMIUM_PID_FILE"
   echo "[player] Chromium started (PID: $(cat "$CHROMIUM_PID_FILE"))"
+
+  # Wait for Chromium to render, then kill previous mpv (overlap = no gap)
   sleep 3
+  stop_mpv 2>/dev/null
 
   # Wait for duration
   sleep "$duration"
 
-  # Repaint root black BEFORE killing Chromium (prevents flash)
-  DISPLAY=:0 xsetroot -solid black 2>/dev/null || true
-
-  # Stop chromium (Xorg stays running)
-  stop_chromium
+  # Don't kill Chromium here — next segment's play_mpv_segment will kill it
+  # after mpv has rendered its first frame (seamless overlap)
 }
 
 # ---------- play mpv segment (X11 mode) ----------
@@ -382,12 +382,11 @@ play_mpv_segment() {
   local pid=$!
   echo "$pid" > "$MPV_PID_FILE"
 
+  # Wait for mpv to render first frame, then kill previous Chromium
+  sleep 0.5
+  stop_chromium 2>/dev/null
+
   sleep "$total_duration"
-
-  # Repaint root black BEFORE killing mpv (prevents flash during transition)
-  DISPLAY=:0 xsetroot -solid black 2>/dev/null || true
-
-  stop_mpv
 }
 
 # ---------- parse segments ----------
@@ -492,12 +491,13 @@ run_orchestrator() {
             fi
           done
 
-          if ! play_mpv_segment "$_seg_playlist" "$_seg_duration"; then
-            echo "[orchestrator] $(date +%H:%M:%S) mpv segment failed" >> "$_orch_log"
-            _error_count=$((_error_count + 1))
-          else
+          # Start mpv FIRST, then kill previous Chromium (overlap = no gap)
+          if [ -s "$_seg_playlist" ]; then
+            play_mpv_segment "$_seg_playlist" "$_seg_duration"
             _error_count=0
           fi
+          # Kill mpv after segment ends (cleanup for next segment)
+          stop_mpv
           rm -f "$_seg_playlist"
 
         elif [ "$_seg_type" = "web" ]; then
@@ -505,12 +505,9 @@ run_orchestrator() {
             _web_url=$(echo "$_web_item" | jq -r '.web_url // empty')
             _web_duration=$(echo "$_web_item" | jq -r '.duration_sec // 30')
             if [ -n "$_web_url" ]; then
-              if ! start_chromium_kiosk "$_web_url" "$_web_duration"; then
-                echo "[orchestrator] $(date +%H:%M:%S) Chromium failed: $_web_url" >> "$_orch_log"
-                _error_count=$((_error_count + 1))
-              else
-                _error_count=0
-              fi
+              # Kill previous mpv AFTER Chromium window is up (overlap)
+              start_chromium_kiosk "$_web_url" "$_web_duration"
+              _error_count=0
             fi
           done
         fi
