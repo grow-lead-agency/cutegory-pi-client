@@ -7,17 +7,22 @@ Wants=network-online.target
 Type=simple
 User=picast
 Group=picast
+SupplementaryGroups=tty video render input
 WorkingDirectory=/opt/picast
 ExecStart=/opt/picast/picast-client.sh
 Restart=always
 RestartSec=10
 EnvironmentFile=/opt/picast/config.env
+TTYPath=/dev/tty7
+StandardInput=tty
+StandardOutput=journal
+StandardError=journal
 
-# Hardening
-NoNewPrivileges=true
-ProtectSystem=strict
-ReadWritePaths=/opt/picast
-ProtectHome=true
+# Hardening (relaxed for Xorg VT access)
+NoNewPrivileges=false
+ProtectSystem=full
+ReadWritePaths=/opt/picast /tmp /home/picast
+ProtectHome=false
 
 [Install]
 WantedBy=multi-user.target

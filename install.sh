@@ -55,18 +55,22 @@ echo "  Core: mpv, jq, curl, cec-utils, ddcutil, ffmpeg, chromium"
 # =========================================================================
 echo "[2/9] Creating picast user..."
 if ! id picast &>/dev/null; then
-  useradd -r -s /usr/sbin/nologin -d "$INSTALL_DIR" picast
-  echo "  Created system user: picast"
+  useradd -r -m -s /bin/bash -d /home/picast picast
+  echo "  Created user: picast (home: /home/picast)"
 else
   echo "  User picast already exists"
+  # Ensure home dir exists (Chromium + shader cache need it)
+  mkdir -p /home/picast/.cache
+  chown -R picast:picast /home/picast
 fi
 
 # Add to required groups for hardware access
 usermod -aG video picast   # DRM/GPU access
 usermod -aG render picast  # GPU render nodes (/dev/dri/renderD128)
 usermod -aG input picast   # Input devices
+usermod -aG tty picast     # VT access (Xorg needs /dev/tty7)
 usermod -aG i2c picast 2>/dev/null || true  # DDC/CI (i2c bus)
-echo "  Groups: video, render, input, i2c"
+echo "  Groups: video, render, input, tty, i2c"
 
 # Enable i2c-dev kernel module (required for ddcutil / DDC/CI)
 if ! grep -q "^i2c-dev" /etc/modules 2>/dev/null; then
@@ -239,10 +243,13 @@ if ! grep -q "quiet" "$CMDLINE" 2>/dev/null; then
   echo "  Hidden boot text (quiet splash)"
 fi
 
-# Xwrapper config (allow non-root Xorg for hybrid mode)
+# Xwrapper config (allow non-root Xorg + root rights for VT access)
 mkdir -p /etc/X11
-echo "allowed_users=anybody" > /etc/X11/Xwrapper.config
-echo "  Xwrapper: allowed_users=anybody"
+cat > /etc/X11/Xwrapper.config << 'XWRAP'
+allowed_users=anybody
+needs_root_rights=yes
+XWRAP
+echo "  Xwrapper: allowed_users=anybody, needs_root_rights=yes"
 
 # =========================================================================
 # [9/9] Enable service
