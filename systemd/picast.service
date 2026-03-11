@@ -18,10 +18,10 @@ StandardInput=tty
 StandardOutput=journal
 StandardError=journal
 
-# Hardening (relaxed for Xorg VT access)
+# Hardening (relaxed for Xorg VT access + log writing)
 NoNewPrivileges=false
 ProtectSystem=full
-ReadWritePaths=/opt/picast /tmp /home/picast
+ReadWritePaths=/opt/picast /tmp /run /var/log /home/picast
 ProtectHome=false
 
 [Install]

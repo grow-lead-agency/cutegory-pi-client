@@ -60,18 +60,16 @@ for entry in $ITEMS; do
   local_path="$MEDIA_DIR/$filename"
   needed_files["$filename"]=1
 
-  # Check if file exists and hash matches — skip if good
-  if [ -f "$local_path" ] && [ -n "$sha" ]; then
-    local_sha=$(sha256sum "$local_path" | cut -d' ' -f1)
-    if [ "$local_sha" = "$sha" ]; then
+  # Check if file exists — skip if already cached
+  if [ -f "$local_path" ]; then
+    local_size=$(stat -c%s "$local_path" 2>/dev/null || echo 0)
+    if [ "$local_size" -ge 1024 ]; then
+      # File exists with reasonable size — keep it
+      # (SHA may differ from DB due to transcoding, so we don't re-download)
       SKIP_COUNT=$((SKIP_COUNT + 1))
       continue
     fi
-    echo "[sync] Hash mismatch for $filename, re-downloading"
-  elif [ -f "$local_path" ]; then
-    # File exists but no hash to verify — keep it
-    SKIP_COUNT=$((SKIP_COUNT + 1))
-    continue
+    echo "[sync] File too small ($local_size bytes), re-downloading: $filename"
   fi
 
   # Re-check disk space before each download
@@ -90,16 +88,6 @@ for entry in $ITEMS; do
       echo "[sync] ERROR: Downloaded file too small ($tmp_size bytes), skipping $filename"
       rm -f "$STAGING_DIR/$filename.tmp"
       continue
-    fi
-
-    # Verify SHA if available
-    if [ -n "$sha" ]; then
-      dl_sha=$(sha256sum "$STAGING_DIR/$filename.tmp" | cut -d' ' -f1)
-      if [ "$dl_sha" != "$sha" ]; then
-        echo "[sync] ERROR: SHA mismatch after download for $filename (expected: ${sha:0:12}, got: ${dl_sha:0:12})"
-        rm -f "$STAGING_DIR/$filename.tmp"
-        continue
-      fi
     fi
 
     mv "$STAGING_DIR/$filename.tmp" "$STAGING_DIR/$filename"

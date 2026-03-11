@@ -1,6 +1,6 @@
 #!/bin/bash
 # =============================================================================
-# Cutegory PiCast — Hybrid player orchestrator (v4)
+# Cutegory PiCast — Hybrid player orchestrator (v5)
 # Plays media via mpv + web URLs via Chromium kiosk
 # Media-only: mpv DRM (direct, no X11)
 # Hybrid: Xorg persistent + mpv X11 + Chromium kiosk (shared display)
@@ -165,6 +165,12 @@ ensure_xorg() {
 
   if [ "$ready" = "true" ]; then
     export DISPLAY=:0
+    # Black background — prevents colored flash during mpv↔Chromium transitions
+    DISPLAY=:0 xsetroot -solid black 2>/dev/null || true
+    # Disable screensaver/DPMS (prevents screen blanking)
+    DISPLAY=:0 xset s noblank 2>/dev/null || true
+    DISPLAY=:0 xset s off 2>/dev/null || true
+    DISPLAY=:0 xset -dpms 2>/dev/null || true
     # Hide cursor
     if command -v unclutter &>/dev/null; then
       DISPLAY=:0 unclutter -idle 0 -root &>/dev/null &
@@ -298,11 +304,6 @@ start_chromium_kiosk() {
     sed -i 's/"exited_cleanly":false/"exited_cleanly":true/' "$chromium_prefs" 2>/dev/null
     sed -i 's/"exit_type":"Crashed"/"exit_type":"Normal"/' "$chromium_prefs" 2>/dev/null
   fi
-
-  # Disable screensaver/DPMS
-  DISPLAY=:0 xset s noblank 2>/dev/null || true
-  DISPLAY=:0 xset s off 2>/dev/null || true
-  DISPLAY=:0 xset -dpms 2>/dev/null || true
 
   # Override Debian default CHROMIUM_FLAGS (extensions, accessibility etc.)
   export CHROMIUM_FLAGS=""

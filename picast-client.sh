@@ -6,7 +6,7 @@
 
 set -euo pipefail
 
-PICAST_VERSION="1.1.0"
+PICAST_VERSION="1.2.0"
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 CONFIG_FILE="${PICAST_CONFIG:-$SCRIPT_DIR/config.env}"
@@ -540,6 +540,9 @@ while true; do
     # Config unchanged — but ensure player is running (e.g. after service restart)
     if [ "$(get_player_status)" = "idle" ] && [ -f "$SYNC_CACHE" ]; then
       echo "[picast] $(date +%H:%M:%S) Player not running, restarting from cache"
+      # Re-run sync to ensure all media files are present (may have been
+      # added after last full sync, or lost during reboot/crash)
+      "$SCRIPT_DIR/sync.sh" "$(cat "$SYNC_CACHE")" 2>&1 || true
       "$SCRIPT_DIR/player.sh" restart "$(cat "$SYNC_CACHE")"
     fi
   fi

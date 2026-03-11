@@ -7,7 +7,7 @@
 
 set -e
 
-PICAST_VERSION="1.1.0"
+PICAST_VERSION="1.2.0"
 INSTALL_DIR="/opt/picast"
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 
@@ -173,12 +173,16 @@ systemctl disable bluetooth.service 2>/dev/null || true
 systemctl disable avahi-daemon.service 2>/dev/null || true
 echo "  Disabled: bluetooth, avahi"
 
-# SSH key-only auth
-if ! grep -q "^PasswordAuthentication no" /etc/ssh/sshd_config 2>/dev/null; then
-  sed -i 's/^#*PasswordAuthentication.*/PasswordAuthentication no/' /etc/ssh/sshd_config
-  sed -i 's/^#*ChallengeResponseAuthentication.*/ChallengeResponseAuthentication no/' /etc/ssh/sshd_config
-  systemctl reload sshd 2>/dev/null || true
-  echo "  SSH: password auth disabled (key-only)"
+# SSH key-only auth (skip if no authorized_keys yet — let user add key first)
+if [ -f /home/picast/.ssh/authorized_keys ] 2>/dev/null || [ -f "$INSTALL_DIR/.ssh/authorized_keys" ] 2>/dev/null; then
+  if ! grep -q "^PasswordAuthentication no" /etc/ssh/sshd_config 2>/dev/null; then
+    sed -i 's/^#*PasswordAuthentication.*/PasswordAuthentication no/' /etc/ssh/sshd_config
+    sed -i 's/^#*ChallengeResponseAuthentication.*/ChallengeResponseAuthentication no/' /etc/ssh/sshd_config
+    systemctl reload sshd 2>/dev/null || true
+    echo "  SSH: password auth disabled (key-only)"
+  fi
+else
+  echo "  SSH: password auth kept (no authorized_keys found — add SSH key first!)"
 fi
 
 # Restrict config.env permissions (contains device secrets)
@@ -257,10 +261,82 @@ echo "  Xwrapper: allowed_users=anybody, needs_root_rights=yes"
 echo "[9/9] Enabling PiCast service..."
 systemctl enable picast.service
 
+# =========================================================================
+# Interactive setup (optional — skip with --non-interactive)
+# =========================================================================
+if [ "${1:-}" != "--non-interactive" ]; then
+  echo ""
+  echo "========================================="
+  echo "  Interactive Setup"
+  echo "========================================="
+
+  # --- SSH key ---
+  echo ""
+  echo "  Paste your SSH public key (or press Enter to skip):"
+  read -r SSH_KEY_INPUT
+  if [ -n "$SSH_KEY_INPUT" ]; then
+    # Create .ssh for picast user
+    mkdir -p "$INSTALL_DIR/.ssh"
+    echo "$SSH_KEY_INPUT" >> "$INSTALL_DIR/.ssh/authorized_keys"
+    chmod 700 "$INSTALL_DIR/.ssh"
+    chmod 600 "$INSTALL_DIR/.ssh/authorized_keys"
+    chown -R picast:picast "$INSTALL_DIR/.ssh"
+    # Also for the main user (pi/admin)
+    MAIN_USER=$(logname 2>/dev/null || echo "pi")
+    MAIN_HOME=$(eval echo "~$MAIN_USER")
+    if [ -d "$MAIN_HOME" ]; then
+      mkdir -p "$MAIN_HOME/.ssh"
+      echo "$SSH_KEY_INPUT" >> "$MAIN_HOME/.ssh/authorized_keys"
+      chmod 700 "$MAIN_HOME/.ssh"
+      chmod 600 "$MAIN_HOME/.ssh/authorized_keys"
+      chown -R "$MAIN_USER:$MAIN_USER" "$MAIN_HOME/.ssh"
+    fi
+    echo "  SSH key added for picast + $MAIN_USER"
+    # Now safe to disable password auth
+    sed -i 's/^#*PasswordAuthentication.*/PasswordAuthentication no/' /etc/ssh/sshd_config
+    sed -i 's/^#*ChallengeResponseAuthentication.*/ChallengeResponseAuthentication no/' /etc/ssh/sshd_config
+    systemctl reload sshd 2>/dev/null || true
+    echo "  SSH: password auth disabled (key-only)"
+  fi
+
+  # --- Device config ---
+  echo ""
+  echo "  Enter DEVICE_ID (UUID from backoffice, or press Enter to skip):"
+  read -r INPUT_DEVICE_ID
+  if [ -n "$INPUT_DEVICE_ID" ]; then
+    sed -i "s|^DEVICE_ID=.*|DEVICE_ID=\"$INPUT_DEVICE_ID\"|" "$INSTALL_DIR/config.env"
+    echo "  DEVICE_ID set"
+  fi
+
+  echo "  Enter DEVICE_KEY (secret token, or press Enter to skip):"
+  read -r INPUT_DEVICE_KEY
+  if [ -n "$INPUT_DEVICE_KEY" ]; then
+    sed -i "s|^DEVICE_KEY=.*|DEVICE_KEY=\"$INPUT_DEVICE_KEY\"|" "$INSTALL_DIR/config.env"
+    echo "  DEVICE_KEY set"
+  fi
+
+  # --- Hostname ---
+  echo ""
+  echo "  Enter hostname for this Pi (e.g. cutegory-prg-recepce, or Enter to skip):"
+  read -r INPUT_HOSTNAME
+  if [ -n "$INPUT_HOSTNAME" ]; then
+    hostnamectl set-hostname "$INPUT_HOSTNAME"
+    echo "  Hostname set to: $INPUT_HOSTNAME"
+  fi
+fi
+
 echo ""
 echo "========================================="
 echo "  PiCast v${PICAST_VERSION} installed!"
 echo ""
+if [ -n "${INPUT_DEVICE_ID:-}" ] && [ -n "${INPUT_DEVICE_KEY:-}" ]; then
+echo "  Config ready! Next:"
+echo "  1. Connect Tailscale:"
+echo "       sudo tailscale up --hostname=${INPUT_HOSTNAME:-picast-XXX}"
+echo ""
+echo "  2. Start + reboot:"
+echo "       sudo systemctl start picast && sudo reboot"
+else
 echo "  Next steps:"
 echo "  1. Edit config:"
 echo "       sudo nano $INSTALL_DIR/config.env"
@@ -271,11 +347,12 @@ echo "       sudo tailscale up --hostname=picast-XXX"
 echo ""
 echo "  3. Start PiCast:"
 echo "       sudo systemctl start picast"
+fi
 echo ""
-echo "  4. Monitor:"
+echo "  Monitor:"
 echo "       journalctl -u picast -f"
 echo "       picast-ctl status"
 echo ""
-echo "  5. Reboot (recommended):"
+echo "  Reboot (recommended):"
 echo "       sudo reboot"
 echo "========================================="
