@@ -1,9 +1,14 @@
 #!/bin/bash
 # =============================================================================
-# Cutegory PiCast — Hybrid player orchestrator (v5)
+# Cutegory PiCast — Hybrid player orchestrator (v6)
 # Plays media via mpv + web URLs via Chromium kiosk
 # Media-only: mpv DRM (direct, no X11)
-# Hybrid: Xorg persistent + mpv X11 + Chromium kiosk (shared display)
+# Hybrid: Xorg persistent + PERSISTENT mpv + Chromium overlay
+#
+# KEY DESIGN: mpv is started ONCE and never killed during playback.
+# Playlist changes via IPC socket. Chromium overlays on top of mpv.
+# This prevents Samsung/LG monitors from flashing "no signal" blue
+# when GPU windows are created/destroyed.
 # =============================================================================
 
 set -uo pipefail
@@ -21,6 +26,7 @@ XORG_PID_FILE="$SCRIPT_DIR/.xorg.pid"
 MPV_LOG="${LOG_DIR:-/opt/picast/logs}/mpv.log"
 ORCHESTRATOR_PID_FILE="$SCRIPT_DIR/.orchestrator.pid"
 CHROMIUM_DATA_DIR="/tmp/picast-chromium-$(id -u)"
+MPV_SOCKET="/opt/picast/.mpv-socket"
 
 ACTION="${1:-}"
 SYNC_DATA="${2:-}"
@@ -44,6 +50,45 @@ detect_display() {
   echo "[player] Orientation: ${DISPLAY_ORIENTATION} (${DISPLAY_ASPECT})"
   [ "$DISPLAY_4K" = "true" ] && echo "[player] 4K capable display detected"
   [ "$DISPLAY_HDR" = "true" ] && echo "[player] HDR capable display detected"
+}
+
+# ---------- mpv IPC helpers ----------
+
+mpv_cmd() {
+  # Send JSON IPC command to mpv via socket
+  if [ -S "$MPV_SOCKET" ]; then
+    echo "$1" | socat - "$MPV_SOCKET" 2>/dev/null || true
+  fi
+}
+
+mpv_loadfile() {
+  # Load a file/playlist into the running mpv instance
+  local file="$1"
+  local mode="${2:-replace}"
+  mpv_cmd "{\"command\": [\"loadfile\", \"$file\", \"$mode\"]}"
+}
+
+mpv_loadlist() {
+  # Load a playlist file into the running mpv instance
+  local playlist="$1"
+  local mode="${2:-replace}"
+  mpv_cmd "{\"command\": [\"loadlist\", \"$playlist\", \"$mode\"]}"
+}
+
+mpv_set_pause() {
+  local state="$1"  # true or false
+  mpv_cmd "{\"command\": [\"set_property\", \"pause\", $state]}"
+}
+
+mpv_set_loop() {
+  mpv_cmd "{\"command\": [\"set_property\", \"loop-playlist\", \"inf\"]}"
+}
+
+mpv_is_alive() {
+  if [ -f "$MPV_PID_FILE" ]; then
+    kill -0 "$(cat "$MPV_PID_FILE")" 2>/dev/null && return 0
+  fi
+  return 1
 }
 
 # ---------- stop helpers ----------
@@ -77,7 +122,6 @@ stop_chromium() {
     rm -f "$CHROMIUM_PID_FILE"
   fi
   pkill -f "chromium.*--kiosk.*picast" 2>/dev/null || true
-  # Clean profile to prevent SingletonLock permission errors on restart
   rm -rf "$CHROMIUM_DATA_DIR" 2>/dev/null || true
 }
 
@@ -112,7 +156,6 @@ stop_all() {
   stop_chromium
   stop_mpv
   stop_xorg
-  # Belt-and-suspenders: kill orphan PiCast processes by PID files
   for pidfile in "$SCRIPT_DIR"/.*.pid; do
     [ -f "$pidfile" ] || continue
     local pid
@@ -123,13 +166,12 @@ stop_all() {
     rm -f "$pidfile"
   done
   sleep 1
-  rm -f /tmp/.X0-lock /tmp/.X11-unix/X0 /opt/picast/.mpv-socket 2>/dev/null || true
+  rm -f /tmp/.X0-lock /tmp/.X11-unix/X0 "$MPV_SOCKET" 2>/dev/null || true
 }
 
 # ---------- Xorg management ----------
 
 ensure_xorg() {
-  # Check if Xorg is already running
   if [ -f "$XORG_PID_FILE" ] && kill -0 "$(cat "$XORG_PID_FILE")" 2>/dev/null; then
     export DISPLAY=:0
     return 0
@@ -141,9 +183,7 @@ ensure_xorg() {
   fi
 
   echo "[player] Starting Xorg..."
-  # Clean stale lock files
   rm -f /tmp/.X0-lock /tmp/.X11-unix/X0 2>/dev/null || true
-  # Ensure Xorg allows non-seat users (needed for systemd service)
   if [ -f /etc/X11/Xwrapper.config ]; then
     grep -q "allowed_users=anybody" /etc/X11/Xwrapper.config 2>/dev/null || \
       echo "allowed_users=anybody" >> /etc/X11/Xwrapper.config
@@ -152,7 +192,6 @@ ensure_xorg() {
   local xpid=$!
   echo "$xpid" > "$XORG_PID_FILE"
 
-  # Poll for Xorg readiness (up to 15s)
   local ready=false
   for _i in $(seq 1 15); do
     if DISPLAY=:0 xdpyinfo &>/dev/null; then
@@ -166,22 +205,13 @@ ensure_xorg() {
   if [ "$ready" = "true" ]; then
     export DISPLAY=:0
 
-    # === BLACK EVERYTHING: prevent blue/colored flash during transitions ===
-
-    # 1. Black out VT7 Linux framebuffer console (Pi OS default is blue/colored)
+    # === BLACK EVERYTHING ===
     setterm --background black --foreground black --clear all > /dev/tty7 2>/dev/null || true
-    # Disable cursor blink on VT7
     echo -e '\033[?25l' > /dev/tty7 2>/dev/null || true
-
-    # 2. Black X11 root window
     DISPLAY=:0 xsetroot -solid black 2>/dev/null || true
-
-    # 3. Disable screensaver/DPMS (prevents screen blanking)
     DISPLAY=:0 xset s noblank 2>/dev/null || true
     DISPLAY=:0 xset s off 2>/dev/null || true
     DISPLAY=:0 xset -dpms 2>/dev/null || true
-
-    # 4. Hide cursor
     if command -v unclutter &>/dev/null; then
       DISPLAY=:0 unclutter -idle 0 -root &>/dev/null &
     fi
@@ -197,7 +227,61 @@ ensure_xorg() {
   fi
 }
 
-# ---------- build mpv args ----------
+# ---------- persistent mpv ----------
+
+ensure_mpv_persistent() {
+  # Start mpv ONCE in idle mode — it stays alive, we control it via IPC
+  if mpv_is_alive; then
+    return 0
+  fi
+
+  echo "[player] Starting persistent mpv (idle mode)..."
+  rm -f "$MPV_SOCKET" 2>/dev/null || true
+
+  DISPLAY=:0 "${PLAYER_BIN:-mpv}" \
+    --fs \
+    --idle=yes \
+    --force-window=yes \
+    --no-terminal \
+    --no-input-default-bindings \
+    --no-osc \
+    --no-osd-bar \
+    --log-file="$MPV_LOG" \
+    --really-quiet \
+    --image-display-duration="${MPV_IMAGE_DURATION:-10}" \
+    --hwdec=auto-safe \
+    --hwdec-codecs=all \
+    --input-ipc-server="$MPV_SOCKET" \
+    --vo=gpu \
+    --scale=bilinear --dscale=bilinear \
+    --video-aspect-override=no --keepaspect=yes \
+    --background-color="#000000" \
+    --cache=yes --demuxer-max-bytes=50MiB --demuxer-max-back-bytes=25MiB \
+    --reset-on-next-file=all \
+    --no-audio \
+    ${DISPLAY_ORIENTATION:+$([ "$DISPLAY_ORIENTATION" = "portrait" ] && echo "--video-rotate=90")} \
+    &
+
+  local pid=$!
+  echo "$pid" > "$MPV_PID_FILE"
+
+  # Wait for IPC socket to appear
+  local tries=0
+  while [ ! -S "$MPV_SOCKET" ] && [ "$tries" -lt 30 ]; do
+    sleep 0.2
+    tries=$((tries + 1))
+  done
+
+  if [ -S "$MPV_SOCKET" ]; then
+    echo "[player] mpv persistent ready (PID: $pid, socket: $MPV_SOCKET)"
+    return 0
+  else
+    echo "[player] ERROR: mpv IPC socket not available after 6s"
+    return 1
+  fi
+}
+
+# ---------- build mpv args (for media-only DRM mode) ----------
 
 build_mpv_args() {
   local sync="$1"
@@ -217,16 +301,12 @@ build_mpv_args() {
     --image-display-duration="$image_duration"
     --hwdec=auto-safe
     --hwdec-codecs=all
-    --input-ipc-server=/opt/picast/.mpv-socket
+    --input-ipc-server="$MPV_SOCKET"
   )
 
-  # Video output: DRM (direct) or X11 (shared with Chromium)
   if [ "$use_x11" = "true" ]; then
-    # X11 mode — shared display with Chromium
     MPV_ARGS+=(--vo=gpu)
-    echo "[player] mpv output: X11 (shared display)"
   else
-    # DRM mode — media-only, most efficient
     if [ -e /dev/dri/card0 ] || [ -e /dev/dri/card1 ]; then
       MPV_ARGS+=(--vo=drm --gpu-context=drm)
       if [ "$DISPLAY_WIDTH" -ge 3840 ] 2>/dev/null; then
@@ -235,13 +315,10 @@ build_mpv_args() {
     else
       MPV_ARGS+=(--vo=gpu)
     fi
-    echo "[player] mpv output: DRM (direct)"
   fi
 
-  # Portrait mode
   if [ "$DISPLAY_ORIENTATION" = "portrait" ]; then
     MPV_ARGS+=(--video-rotate=90)
-    echo "[player] Portrait mode: rotating content 90°"
   fi
 
   MPV_ARGS+=(
@@ -252,7 +329,6 @@ build_mpv_args() {
     --reset-on-next-file=all
   )
 
-  # 4K/HDR
   if [ "$DISPLAY_4K" = "true" ] && [ "$DISPLAY_WIDTH" -ge 3840 ] 2>/dev/null; then
     MPV_ARGS+=(--video-output-levels=full)
   fi
@@ -260,7 +336,6 @@ build_mpv_args() {
     MPV_ARGS+=(--target-colorspace-hint=yes --hdr-compute-peak=yes)
   fi
 
-  # Audio
   local audio_enabled
   audio_enabled=$(echo "$sync" | jq -r '.settings.audio_enabled // false')
   if [ "$audio_enabled" = "false" ]; then
@@ -278,8 +353,6 @@ start_chromium_kiosk() {
 
   echo "[player] Chromium kiosk: $url (${duration}s)"
 
-  # Use binary directly to bypass /usr/bin/chromium wrapper
-  # (wrapper sources /etc/chromium.d/* adding unwanted flags)
   local chromium_bin=""
   for bin in /usr/lib/chromium/chromium /usr/lib/chromium-browser/chromium-browser; do
     if [ -x "$bin" ]; then
@@ -287,7 +360,6 @@ start_chromium_kiosk() {
       break
     fi
   done
-  # Fallback to wrapper if binary not found
   if [ -z "$chromium_bin" ]; then
     for bin in chromium chromium-browser; do
       if command -v "$bin" &>/dev/null; then
@@ -303,37 +375,27 @@ start_chromium_kiosk() {
     return
   fi
 
-  # Xorg should already be running (started in hybrid mode init)
   if [ -z "${DISPLAY:-}" ]; then
     echo "[player] ERROR: No DISPLAY set, cannot start Chromium"
     sleep "$duration"
     return
   fi
 
-  # Clear Chromium crashed state (prevents "restore pages" dialog)
   local chromium_prefs="$CHROMIUM_DATA_DIR/Default/Preferences"
   if [ -f "$chromium_prefs" ]; then
     sed -i 's/"exited_cleanly":false/"exited_cleanly":true/' "$chromium_prefs" 2>/dev/null
     sed -i 's/"exit_type":"Crashed"/"exit_type":"Normal"/' "$chromium_prefs" 2>/dev/null
   fi
 
-  # Override Debian default CHROMIUM_FLAGS (extensions, accessibility etc.)
   export CHROMIUM_FLAGS=""
 
-  # Get actual display resolution for fullscreen
   local screen_w screen_h
   screen_w=$(DISPLAY=:0 xdpyinfo 2>/dev/null | grep 'dimensions:' | awk '{print $2}' | cut -dx -f1)
   screen_h=$(DISPLAY=:0 xdpyinfo 2>/dev/null | grep 'dimensions:' | awk '{print $2}' | cut -dx -f2)
   screen_w="${screen_w:-1920}"
   screen_h="${screen_h:-1080}"
 
-  # Ensure black root is visible while Chromium loads
-  DISPLAY=:0 xsetroot -solid black 2>/dev/null || true
-
-  # dbus-run-session is CRITICAL — without it Chromium exits after ~10s
-  # --kiosk = true fullscreen (no title bar, no URL bar)
-  # --test-type suppresses "no-sandbox" warning banner
-  # --default-background-color=000000 prevents white/blue flash during page load
+  # Chromium renders ON TOP of mpv (mpv stays alive underneath showing black idle)
   DISPLAY=:0 dbus-run-session "$chromium_bin" \
     --kiosk \
     --window-size="${screen_w},${screen_h}" --window-position=0,0 \
@@ -353,20 +415,19 @@ start_chromium_kiosk() {
   echo "$!" > "$CHROMIUM_PID_FILE"
   echo "[player] Chromium started (PID: $(cat "$CHROMIUM_PID_FILE"))"
 
-  # Wait for Chromium to render, then kill previous mpv (overlap = no gap)
+  # Wait for Chromium to render
   sleep 3
-  stop_mpv 2>/dev/null
 
   # Wait for duration
   sleep "$duration"
 
-  # Don't kill Chromium here — next segment's play_mpv_segment will kill it
-  # after mpv has rendered its first frame (seamless overlap)
+  # Kill Chromium — mpv is still alive underneath, no signal loss
+  stop_chromium
 }
 
-# ---------- play mpv segment (X11 mode) ----------
+# ---------- play mpv segment via IPC ----------
 
-play_mpv_segment() {
+play_mpv_segment_ipc() {
   local playlist_file="$1"
   local total_duration="$2"
 
@@ -376,26 +437,12 @@ play_mpv_segment() {
 
   local count
   count=$(wc -l < "$playlist_file" | tr -d ' ')
-  echo "[player] mpv segment: $count files, ${total_duration}s"
+  echo "[player] mpv segment (IPC): $count files, ${total_duration}s"
 
-  # Save old mpv PID (if any) for overlap kill
-  local old_mpv_pid=""
-  if [ -f "$MPV_PID_FILE" ]; then
-    old_mpv_pid=$(cat "$MPV_PID_FILE" 2>/dev/null || true)
-  fi
-
-  DISPLAY=:0 "${PLAYER_BIN:-mpv}" "${MPV_ARGS[@]}" --playlist="$playlist_file" --loop-playlist=inf &
-  local pid=$!
-  echo "$pid" > "$MPV_PID_FILE"
-
-  # Wait for mpv to render first frame, then kill ALL previous players
-  sleep 0.5
-  # Kill old mpv instance (media→media overlap)
-  if [ -n "$old_mpv_pid" ] && [ "$old_mpv_pid" != "$pid" ]; then
-    kill "$old_mpv_pid" 2>/dev/null || true
-  fi
-  # Kill old Chromium (web→media overlap)
-  stop_chromium 2>/dev/null
+  # Load new playlist into persistent mpv (replaces current)
+  mpv_loadlist "$playlist_file" "replace"
+  mpv_set_loop
+  mpv_set_pause "false"
 
   sleep "$total_duration"
 }
@@ -436,9 +483,8 @@ run_orchestrator() {
     echo "[player] No items to play, showing standby"
     local standby="$SCRIPT_DIR/assets/standby.jpg"
     if [ -f "$standby" ]; then
-      echo "$standby" > "$PLAYLIST_FILE"
-      "${PLAYER_BIN:-mpv}" "${MPV_ARGS[@]}" --playlist="$PLAYLIST_FILE" --loop-playlist=inf &
-      echo "$!" > "$MPV_PID_FILE"
+      mpv_loadfile "$standby"
+      mpv_set_loop
     fi
     return
   fi
@@ -460,8 +506,8 @@ run_orchestrator() {
     return
   fi
 
-  # ---- HYBRID: start Xorg ONCE, mpv + Chromium share X11 display ----
-  echo "[player] Hybrid playlist — starting Xorg for shared display"
+  # ---- HYBRID: Xorg + persistent mpv + Chromium overlay ----
+  echo "[player] Hybrid playlist — starting Xorg + persistent mpv"
   if ! ensure_xorg; then
     echo "[player] FATAL: Cannot start Xorg, falling back to media-only"
     generate_media_playlist "$sync"
@@ -472,7 +518,16 @@ run_orchestrator() {
     return
   fi
 
-  echo "[player] Hybrid orchestrator starting (Xorg on :0)"
+  # Extract image duration for persistent mpv
+  MPV_IMAGE_DURATION=$(echo "$sync" | jq -r '[.items[] | select(.item_type == "media" and .type == "image") | .duration_sec][0] // 10')
+  export MPV_IMAGE_DURATION
+
+  if ! ensure_mpv_persistent; then
+    echo "[player] FATAL: Cannot start persistent mpv"
+    return
+  fi
+
+  echo "[player] Hybrid orchestrator starting (Xorg on :0, mpv persistent)"
 
   local _orch_log="${LOG_DIR:-/opt/picast/logs}/orchestrator.log"
 
@@ -481,6 +536,12 @@ run_orchestrator() {
     _max_errors=5
 
     while true; do
+      # Check mpv is still alive at loop start
+      if ! mpv_is_alive; then
+        echo "[player] mpv died, restarting..."
+        ensure_mpv_persistent || exit 1
+      fi
+
       _i=0
       while [ "$_i" -lt "$segment_count" ]; do
         _segment=$(echo "$segments" | jq -c ".[$_i]")
@@ -502,26 +563,29 @@ run_orchestrator() {
             fi
           done
 
-          # Start mpv — it will kill previous Chromium/mpv after rendering first frame
           if [ -s "$_seg_playlist" ]; then
-            play_mpv_segment "$_seg_playlist" "$_seg_duration"
+            play_mpv_segment_ipc "$_seg_playlist" "$_seg_duration"
             _error_count=0
           fi
           rm -f "$_seg_playlist"
 
         elif [ "$_seg_type" = "web" ]; then
+          # Pause mpv (show black idle) while Chromium is on top
+          mpv_set_pause "true"
+
           echo "$_segment" | jq -c '.items[]' | while read -r _web_item; do
             _web_url=$(echo "$_web_item" | jq -r '.web_url // empty')
             _web_duration=$(echo "$_web_item" | jq -r '.duration_sec // 30')
             if [ -n "$_web_url" ]; then
-              # Kill previous mpv AFTER Chromium window is up (overlap)
               start_chromium_kiosk "$_web_url" "$_web_duration"
               _error_count=0
             fi
           done
+
+          # Unpause mpv for next media segment
+          mpv_set_pause "false"
         fi
 
-        # Circuit breaker: too many consecutive errors → bail out
         if [ "$_error_count" -ge "$_max_errors" ]; then
           echo "[orchestrator] $(date +%H:%M:%S) CIRCUIT BREAKER: $_error_count consecutive errors, exiting" >> "$_orch_log"
           echo "[player] Orchestrator hit circuit breaker ($_max_errors errors)"
@@ -572,7 +636,6 @@ start_player() {
 
   detect_display
 
-  # Check if hybrid — if so, build X11 mpv args; otherwise DRM
   local has_web
   has_web=$(echo "$sync" | jq '[(.items // [])[] | select(.item_type == "web")] | length > 0')
   build_mpv_args "$sync" "$has_web"
