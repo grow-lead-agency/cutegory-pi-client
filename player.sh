@@ -258,6 +258,7 @@ ensure_mpv_persistent() {
     --background-color="#000000" \
     --cache=yes --demuxer-max-bytes=50MiB --demuxer-max-back-bytes=25MiB \
     --reset-on-next-file=all \
+    --video-sync=display-resample \
     --no-audio \
     ${DISPLAY_ORIENTATION:+$([ "$DISPLAY_ORIENTATION" = "portrait" ] && echo "--video-rotate=90")} \
     &
@@ -327,6 +328,7 @@ build_mpv_args() {
     --background-color="#000000"
     --cache=yes --demuxer-max-bytes=50MiB --demuxer-max-back-bytes=25MiB
     --reset-on-next-file=all
+    --video-sync=display-resample
   )
 
   if [ "$DISPLAY_4K" = "true" ] && [ "$DISPLAY_WIDTH" -ge 3840 ] 2>/dev/null; then
