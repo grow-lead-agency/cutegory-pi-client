@@ -249,7 +249,7 @@ ensure_mpv_persistent() {
     --log-file="$MPV_LOG" \
     --really-quiet \
     --image-display-duration="${MPV_IMAGE_DURATION:-10}" \
-    --hwdec=auto-safe \
+    --hwdec=v4l2m2m \
     --hwdec-codecs=all \
     --input-ipc-server="$MPV_SOCKET" \
     --vo=gpu \
@@ -300,7 +300,7 @@ build_mpv_args() {
     --log-file="$MPV_LOG"
     --really-quiet
     --image-display-duration="$image_duration"
-    --hwdec=auto-safe
+    --hwdec=v4l2m2m
     --hwdec-codecs=all
     --input-ipc-server="$MPV_SOCKET"
   )
