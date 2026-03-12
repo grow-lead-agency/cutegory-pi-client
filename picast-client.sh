@@ -279,6 +279,12 @@ send_heartbeat() {
     cpu_temp=$(awk '{printf "%.1f", $1/1000}' /sys/class/thermal/thermal_zone0/temp 2>/dev/null || echo "0")
   fi
 
+  # Pi model (e.g. "Raspberry Pi 4 Model B Rev 1.5")
+  local pi_model="unknown"
+  if [ -f /proc/device-tree/model ]; then
+    pi_model=$(tr -d '\0' < /proc/device-tree/model 2>/dev/null || echo "unknown")
+  fi
+
   # Include command results if any
   local cmd_results="${PENDING_COMMAND_RESULTS:-[]}"
 
@@ -294,6 +300,7 @@ send_heartbeat() {
     --argjson cpu_temp "${cpu_temp:-0}" \
     --argjson display "$display_json" \
     --argjson cmd_results "$cmd_results" \
+    --arg pi_model "$pi_model" \
     '{
       device_id: $device_id,
       ip_address: $ip,
@@ -302,6 +309,7 @@ send_heartbeat() {
       player_status: $player_status,
       client_version: $version,
       cpu_temp: $cpu_temp,
+      pi_model: $pi_model,
       display_resolution: ($display.current_resolution // "unknown"),
       display_model: (($display.manufacturer // "") + " " + ($display.model // "") | gsub("^ | $"; "")),
       display_4k: ($display.is_4k_active // false),

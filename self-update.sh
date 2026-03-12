@@ -83,10 +83,10 @@ if [ -d "assets" ]; then
   cp -r assets/* "$INSTALL_DIR/assets/" 2>/dev/null || true
 fi
 
-# Copy updated systemd services
+# Copy updated systemd services (needs sudo)
 if [ -f "systemd/picast.service" ]; then
-  cp "systemd/picast.service" /etc/systemd/system/picast.service
-  systemctl daemon-reload
+  sudo cp "systemd/picast.service" /etc/systemd/system/picast.service
+  sudo systemctl daemon-reload
 fi
 
 # Auto-install missing dependencies (if deps file changed)
@@ -98,14 +98,14 @@ if [ -n "$NEW_DEPS_HASH" ] && [ "$NEW_DEPS_HASH" != "$OLD_DEPS_HASH" ]; then
   for pkg in chromium xserver-xorg-core xserver-xorg-legacy xinit unclutter dbus-x11 x11-xserver-utils fbgrab; do
     if ! dpkg -l "$pkg" &>/dev/null 2>&1; then
       log "Installing missing dependency: $pkg"
-      apt-get install -y -qq "$pkg" 2>/dev/null || log "WARN: Failed to install $pkg"
+      sudo apt-get install -y -qq "$pkg" 2>/dev/null || log "WARN: Failed to install $pkg"
     fi
   done
   echo "$NEW_DEPS_HASH" > "$DEPS_FILE"
 fi
 
 # Fix ownership
-chown -R picast:picast "$INSTALL_DIR"
+sudo chown -R picast:picast "$INSTALL_DIR"
 
 # Save current version
 echo "$LATEST_SHA" > "$HASH_FILE"
@@ -114,6 +114,6 @@ echo "$LATEST_SHA" > "$HASH_FILE"
 rm -rf "$UPDATE_DIR"
 
 log "Updated to ${LATEST_SHA:0:7}, restarting picast..."
-systemctl restart picast
+sudo systemctl restart picast
 
 log "Update complete"
